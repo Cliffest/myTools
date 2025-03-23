@@ -1,5 +1,5 @@
 """
-以 source 目录为参考, 增量同步到 sync 目录下, 并记录每次同步的更改信息到 sync/log.txt
+以 source 目录为参考, 增量同步到 sync 目录下, 并记录每次同步的更改信息到 source/synclog.txt 和 sync/synclog.txt
 可识别 source/.syncignore 下的忽略规则 (完整路径)
 """
 import os
@@ -51,8 +51,10 @@ class FileComparer:
 class Logger:
     """日志记录类"""
     
-    def __init__(self, log_file: str):
+    def __init__(self, log_file: str, copy_path=None):
         self.log_file = log_file
+        self.copy_file = os.path.join(copy_path, os.path.basename(log_file)) if copy_path is not None else None
+
         self.logs = []  # 缓存日志
         
         # 确保日志目录存在
@@ -93,6 +95,9 @@ class Logger:
             with open(self.log_file, "a", encoding="utf-8") as f:
                 for log in self.logs:
                     f.write(f"{log}\n")
+            
+            if self.copy_file is not None:
+                shutil.copy2(self.log_file, self.copy_file)
                     
             self.logs = []  # 清空缓存
         except IOError as e:
@@ -228,8 +233,9 @@ class Sync(Source):
         self.interval = interval  # int
         self.delete = delete  # True/False
         self.time_factor = time_factor  # int
-        self.log_file = os.path.join(self.sync_root_path, "log.txt")
-        self.logger = Logger(self.log_file)
+        
+        self.log_file = os.path.join(self.sync_root_path, "synclog.txt")
+        self.logger = Logger(self.log_file, copy_path=self.source_root_path)
         self.file_comparer = FileComparer()
 
     def confirm_sync(self) -> bool:
