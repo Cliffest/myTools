@@ -300,7 +300,7 @@ class Sync(Source):
                 return True, "modified"
             return True, "unchanged"
         except Exception as e:
-            self.logger.log("ERROR", f"同步失败: {os.path.relpath(dst_file, self.sync_root_path)} - {str(e)}")
+            self.logger.log("ERROR", f"同步文件失败: {os.path.relpath(dst_file, self.sync_root_path)} - {str(e)}")
             return False, "error"
 
     def sync_directory(self, src_dir: str, dst_dir: str) -> Tuple[int, int, int]:
