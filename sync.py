@@ -295,15 +295,19 @@ class Sync(Source):
             print(f"警告: 比较文件失败 {src_file} 和 {dst_file}: {e}")
             return False
 
-    def rm_git_objects_file(self, file_path):
+    def rm_git_objects_file(self, file_path):  # 绝对路径
         """
         安全删除 Git 对象文件。
         返回: True (成功) / False (失败)
         """
-        # 1. 校验文件名格式
-        if not re.fullmatch(r"[0-9a-f]{38}", os.path.basename(file_path)):
-            self.logger.log("ERROR", f"{file_path} 不是合法 Git 对象")
+        if os.path.isdir(file_path):
+            self.logger.log("ERROR", f"{file_path} 不是单个文件")
             return False
+
+        # 1. 校验文件名格式
+        #if not re.fullmatch(r"[0-9a-f]{38}", os.path.basename(file_path)):
+        #    self.logger.log("ERROR", f"{file_path} 不是合法 Git 对象")
+        #    return False
 
         # 2. 校验路径安全性
         if not ".git/objects/" in file_path.replace("\\", "/"):
@@ -323,6 +327,7 @@ class Sync(Source):
             dir_path = os.path.dirname(file_path)
             if os.path.exists(file_path) and len(os.listdir(dir_path)) == 1:
                 shutil.rmtree(dir_path)
+                os.makedirs(dir_path)  # 只删除文件, 恢复上级目录
                 return True
             else:
                 self.logger.log("ERROR", f"无法删除: {file_path} 所在目录文件数量不为 1")
