@@ -640,10 +640,12 @@ def main():
     parser.add_argument("sync", type=str, help="同步目标目录路径")
     
     parser.add_argument("-m", "--mode", choices=["date", "file", "reset"], required=True, help="同步模式, date: 按最新修改日期增量同步, file: 比对文件内容增量同步, reset: 删除后复制源文件过去")
-    parser.add_argument("-i", "--interval", type=int, default=0, help="同步间隔时间(s), 0 表示仅执行一次; 默认为 0")
-    parser.add_argument("-D", "--delete", action="store_true", help="删除目标目录中匹配忽视规则的所有文件")
-    
     parser.add_argument("-f", "--time_factor", type=int, default=1e6, help="处理不同设备的时间精度, 应 =1/精度. 操作系统间可设 1e6; U盘基于文件系统, 例如 exFAT 应设 1")
+    
+    parser.add_argument("-i", "--interval", type=int, default=0, help="同步间隔时间(s), 0 表示仅执行一次; 默认为 0")
+    parser.add_argument("-D", "-delete", action="store_true", help="删除目标目录中匹配忽视规则的所有文件")
+    
+    
     args = parser.parse_args()
 
     # 检查源目录是否存在
