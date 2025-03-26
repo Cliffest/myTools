@@ -2,14 +2,15 @@
 以 source 目录为参考, 增量同步到 sync 目录下, 并记录每次同步的更改信息到 source/synclog.txt 和 sync/synclog.txt
 可识别 source/.syncignore 下的忽略规则 (完整路径)
 """
+import argparse
+import fnmatch
+import hashlib
+import logging
 import os
 import re
-import time
-import argparse
+import stat
 import shutil
-import hashlib
-import fnmatch
-import logging
+import time
 from datetime import datetime
 from typing import List, Optional, Tuple
 
@@ -20,7 +21,7 @@ class FileComparer:
     @staticmethod
     def compare_by_date(file1: str, file2: str, time_factor: int) -> bool:
         """基于修改日期比较文件"""
-        micro_error = 0 if time_factor < 1e5 else 1  # 允许微小误差
+        micro_error = 0 if time_factor < 1e3 else 1  # 允许微小误差
         #print(int(time_factor * os.path.getmtime(file1)), int(time_factor * os.path.getmtime(file2)))  ####
         return int(time_factor * os.path.getmtime(file1)) - micro_error <= int(time_factor * os.path.getmtime(file2))
         
@@ -102,6 +103,13 @@ class Logger:
             self.logs = []  # 清空缓存
         except IOError as e:
             print(f"错误: 无法写入日志文件: {e}")
+
+
+class NoTracebackError(Exception):
+    def __init__(self, message):
+        self.message = message
+    def __str__(self):
+        return self.message
 
 
 class Source:
@@ -218,6 +226,18 @@ class Source:
             return self.cache_ignore[relative_path]
 
 
+class Git:
+    def __init__(self, git_root_path):
+        self.git_root_path = os.path.abspath(git_root_path)  # 使用绝对路径
+
+    def sync_from_git(self, source_git: "Git") -> bool:
+        """
+        增量同步两个 .git 仓库: source_git -> self, 处理权限问题且不破坏仓库完整性
+        返回: True (成功) / False (失败)
+        """
+        pass
+
+
 class Sync(Source):
     def __init__(self, source_root_path: str, sync_root_path: str, mode: str, interval: int, delete: bool, time_factor: int):
         """
@@ -275,6 +295,42 @@ class Sync(Source):
             print(f"警告: 比较文件失败 {src_file} 和 {dst_file}: {e}")
             return False
 
+    def rm_git_objects_file(self, file_path):
+        """
+        安全删除 Git 对象文件。
+        返回: True (成功) / False (失败)
+        """
+        # 1. 校验文件名格式
+        if not re.fullmatch(r"[0-9a-f]{38}", os.path.basename(file_path)):
+            self.logger.log("ERROR", f"{file_path} 不是合法 Git 对象")
+            return False
+
+        # 2. 校验路径安全性
+        if not ".git/objects/" in file_path.replace("\\", "/"):
+            self.logger.log("ERROR", f"非法路径: {file_path} 必须位于 .git/objects/ 下")
+            return False
+
+        try:
+            # 3. 尝试 os.remove
+            try:
+                os.chmod(file_path, stat.S_IWRITE)
+                os.remove(file_path)
+                return True
+            except Exception as e:
+                self.logger.log("Warning", f"os.remove({file_path}) 失败: {e}, 尝试目录级删除...")
+
+            # 4. 谨慎使用 rmtree
+            dir_path = os.path.dirname(file_path)
+            if os.path.exists(file_path) and len(os.listdir(dir_path)) == 1:
+                shutil.rmtree(dir_path)
+                return True
+            else:
+                self.logger.log("ERROR", f"无法删除: {file_path} 所在目录文件数量不为 1")
+                return False
+        except Exception as e:
+            self.logger.log("ERROR", f"删除 {file_path} 失败: {e}")
+            return False
+
     def sync_file(self, src_file: str, dst_file: str) -> Tuple[bool, str]:
         """
         同步单个文件
@@ -293,7 +349,8 @@ class Sync(Source):
             elif not self.compare_files(src_file, dst_file):
                 # 处理 .git/objects 下的文件, 先删除再复制
                 if ".git/objects/" in dst_file.replace("\\", "/"):
-                    os.remove(dst_file)
+                    if not self.rm_git_objects_file(dst_file):
+                        return False, "error"
 
                 shutil.copy2(src_file, dst_file)
                 self.logger.log("M", os.path.relpath(dst_file, self.sync_root_path))
@@ -366,6 +423,10 @@ class Sync(Source):
         判断 sync_path 是否属于 多余文件/目录, 并对匹配忽视规则的文件/目录进行再判断: 
         若上级目录(非根目录)中存在多余目录, 则判定为 多余文件/目录
         """
+        # 如果文件已经不存在则不进行二次删除
+        if not os.path.exists(sync_path):
+            return False
+
         ignore = self.is_ignore(sync_path, self.sync_root_path)
         redundant = self._is_redundant(source_path, sync_path)
         
@@ -389,7 +450,7 @@ class Sync(Source):
         failed = 0
         
         # 忽略的特殊文件
-        special_files = ["log.txt"]
+        special_files = [os.path.basename(self.log_file)]
         
         for root, dirs, files in os.walk(self.sync_root_path, topdown=False):
             for name in files:
@@ -406,7 +467,11 @@ class Sync(Source):
                 try:
                     #if not os.path.exists(source_path) or self.is_ignore(source_path):
                     if self.is_redundant(source_path, sync_path):
-                        os.remove(sync_path)
+                        if ".git/objects/" in sync_path.replace("\\", "/"):
+                            if not self.rm_git_objects_file(sync_path):
+                                raise NoTracebackError(f"Remove {sync_path} failed")
+                        else: 
+                            os.remove(sync_path)
                         self.logger.log("D", relative_path)
                         deleted_files += 1
                 except Exception as e:
