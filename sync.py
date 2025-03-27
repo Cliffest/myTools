@@ -23,7 +23,8 @@ class FileComparer:
         """基于修改日期比较文件"""
         micro_error = 0 if time_factor < 1e3 else 1  # 允许微小误差
         #print(int(time_factor * os.path.getmtime(file1)), int(time_factor * os.path.getmtime(file2)))  ####
-        return int(time_factor * os.path.getmtime(file1)) - micro_error <= int(time_factor * os.path.getmtime(file2))
+        # return int(time_factor * os.path.getmtime(file1)) - micro_error <= int(time_factor * os.path.getmtime(file2))
+        return abs(int(time_factor * os.path.getmtime(file1)) - int(time_factor * os.path.getmtime(file2))) <= micro_error
         
     @staticmethod
     def compare_by_hash(file1: str, file2: str, chunk_size: int = 8192) -> bool:
@@ -284,14 +285,15 @@ class Sync(Source):
         """
         if not os.path.exists(dst_file):
             return False
-        
-        is_git_objects_file = (".git/objects/" in src_file.replace("\\", "/")) and (".git/objects/" in dst_file.replace("\\", "/"))
 
         try:
-            if self.mode == "file" or is_git_objects_file:
+            if self.mode == "date":
+                is_git_objects_file = (".git/objects/" in src_file.replace("\\", "/")) and (".git/objects/" in dst_file.replace("\\", "/"))
+                is_same_file = self.file_comparer.compare_by_date(src_file, dst_file, time_factor=self.time_factor)
+                # 若是 .git/objects/ 下的文件, 并且日期判断为不同文件后, 用文件内容进行二次判断 (规避权限问题)
+                return is_same_file if not is_git_objects_file or is_same_file else self.file_comparer.compare_by_hash(src_file, dst_file)
+            elif self.mode == "file":
                 return self.file_comparer.compare_by_hash(src_file, dst_file)
-            elif self.mode == "date":
-                return self.file_comparer.compare_by_date(src_file, dst_file, time_factor=self.time_factor)   
             return False
         except Exception as e:
             print(f"警告: 比较文件失败 {src_file} 和 {dst_file}: {e}")
