@@ -284,12 +284,14 @@ class Sync(Source):
         """
         if not os.path.exists(dst_file):
             return False
-            
+        
+        is_git_objects_file = (".git/objects/" in src_file.replace("\\", "/")) and (".git/objects/" in dst_file.replace("\\", "/"))
+
         try:
-            if self.mode == "date":
-                return self.file_comparer.compare_by_date(src_file, dst_file, time_factor=self.time_factor)
-            elif self.mode == "file":
+            if self.mode == "file" or is_git_objects_file:
                 return self.file_comparer.compare_by_hash(src_file, dst_file)
+            elif self.mode == "date":
+                return self.file_comparer.compare_by_date(src_file, dst_file, time_factor=self.time_factor)   
             return False
         except Exception as e:
             print(f"警告: 比较文件失败 {src_file} 和 {dst_file}: {e}")
@@ -300,7 +302,7 @@ class Sync(Source):
         安全删除 Git 对象文件。
         返回: True (成功) / False (失败)
         """
-        if os.path.isdir(file_path):
+        if not os.path.isfile(file_path):
             self.logger.log("ERROR", f"{file_path} 不是单个文件")
             return False
 
@@ -643,7 +645,7 @@ def main():
     parser.add_argument("-f", "--time_factor", type=int, default=1e6, help="处理不同设备的时间精度, 应 =1/精度. 操作系统间可设 1e6; U盘基于文件系统, 例如 exFAT 应设 1")
     
     parser.add_argument("-i", "--interval", type=int, default=0, help="同步间隔时间(s), 0 表示仅执行一次; 默认为 0")
-    parser.add_argument("-D", "-delete", action="store_true", help="删除目标目录中匹配忽视规则的所有文件")
+    parser.add_argument("-D", "--delete", action="store_true", help="删除目标目录中匹配忽视规则的所有文件")
     
     
     args = parser.parse_args()
