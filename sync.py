@@ -25,7 +25,7 @@ class FileComparer:
         # print(int(time_factor * os.path.getmtime(file1)), int(time_factor * os.path.getmtime(file2)))  ####
         # return int(time_factor * os.path.getmtime(file1)) - micro_error <= int(time_factor * os.path.getmtime(file2))
         # return abs(int(time_factor * os.path.getmtime(file1)) - int(time_factor * os.path.getmtime(file2))) <= micro_error
-        micro_error = 1.8  # 允许误差: micro_error/time_factor (s)
+        micro_error = 2  # 允许误差: micro_error/time_factor (s)
         #print(time_factor * abs(os.path.getmtime(file1) - os.path.getmtime(file2)))  ####
         return time_factor * abs(os.path.getmtime(file1) - os.path.getmtime(file2)) <= micro_error
     
