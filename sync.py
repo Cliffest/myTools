@@ -21,11 +21,14 @@ class FileComparer:
     @staticmethod
     def compare_by_date(file1: str, file2: str, time_factor: int) -> bool:
         """基于修改日期比较文件"""
-        micro_error = 0 if time_factor < 1e3 else 1  # 允许微小误差
-        #print(int(time_factor * os.path.getmtime(file1)), int(time_factor * os.path.getmtime(file2)))  ####
+        # micro_error = 0 if time_factor < 1e3 else 1  # 允许微小误差
+        # print(int(time_factor * os.path.getmtime(file1)), int(time_factor * os.path.getmtime(file2)))  ####
         # return int(time_factor * os.path.getmtime(file1)) - micro_error <= int(time_factor * os.path.getmtime(file2))
-        return abs(int(time_factor * os.path.getmtime(file1)) - int(time_factor * os.path.getmtime(file2))) <= micro_error
-        
+        # return abs(int(time_factor * os.path.getmtime(file1)) - int(time_factor * os.path.getmtime(file2))) <= micro_error
+        micro_error = 1.8  # 允许误差: micro_error/time_factor (s)
+        #print(time_factor * abs(os.path.getmtime(file1) - os.path.getmtime(file2)))  ####
+        return time_factor * abs(os.path.getmtime(file1) - os.path.getmtime(file2)) <= micro_error
+    
     @staticmethod
     def compare_by_hash(file1: str, file2: str, chunk_size: int = 8192) -> bool:
         """基于文件内容哈希比较文件"""
