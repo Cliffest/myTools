@@ -291,11 +291,11 @@ class Sync(Source):
 
         try:
             if self.mode == "date":
-                return self.file_comparer.compare_by_date(src_file, dst_file, time_factor=self.time_factor)
-                #is_git_objects_file = (".git/objects/" in src_file.replace("\\", "/")) and (".git/objects/" in dst_file.replace("\\", "/"))
-                #is_same_file = self.file_comparer.compare_by_date(src_file, dst_file, time_factor=self.time_factor)
+                #return self.file_comparer.compare_by_date(src_file, dst_file, time_factor=self.time_factor)
+                is_git_objects_file = (".git/objects/" in src_file.replace("\\", "/")) and (".git/objects/" in dst_file.replace("\\", "/"))
+                is_same_file = self.file_comparer.compare_by_date(src_file, dst_file, time_factor=self.time_factor)
                 # 若是 .git/objects/ 下的文件, 并且日期判断为不同文件后, 用文件内容进行二次判断 (规避权限问题)
-                #return is_same_file if not is_git_objects_file or is_same_file else self.file_comparer.compare_by_hash(src_file, dst_file)
+                return is_same_file if not is_git_objects_file or is_same_file else self.file_comparer.compare_by_hash(src_file, dst_file)
             elif self.mode == "file":
                 return self.file_comparer.compare_by_hash(src_file, dst_file)
             return False
