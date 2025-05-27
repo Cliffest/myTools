@@ -674,7 +674,7 @@ class ParallelSync(Source):
                     # 获取计数器结果
                     counts = self.counter.get_counts()
                     summary = (f"同步完成: 新增 {counts['added']} 个文件, 更新 {counts['modified']} 个文件, " 
-                              f"删除 {counts['deleted_files']} 个文件和 {counts['deleted_dirs']} 个目录, 失败 {counts['failed']} 项")
+                               f"删除 {counts['deleted_files']} 个文件和 {counts['deleted_dirs']} 个目录, 失败 {counts['failed']} 项")
                     self.logger.log_summary(summary)
                     
                 # 保存日志
@@ -684,6 +684,10 @@ class ParallelSync(Source):
                 sync_time = time.time() - sync_time_start
                 time_summary = f"同步耗时: {sync_time:.2f} 秒"
                 self.logger.log_summary(time_summary)
+                self.logger.save()
+
+                # 记录同步任务
+                self.logger.log_summary(f"同步任务 {self.source_root_path} -> {self.sync_root_path} 完成")
                 self.logger.save()
                 
                 # 如果间隔为0，则只执行一次
