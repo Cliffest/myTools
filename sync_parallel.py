@@ -21,7 +21,7 @@ import multiprocessing
 
 
 class FileComparer:
-    """文件比较类，提供不同比较策略"""
+    """文件比较类, 提供不同比较策略"""
     
     @staticmethod
     def compare_by_date(file1: str, file2: str, time_factor: int) -> bool:
@@ -33,7 +33,7 @@ class FileComparer:
     def compare_by_hash(file1: str, file2: str, chunk_size: int = 8192) -> bool:
         """基于文件内容哈希比较文件"""
         if os.path.getsize(file1) != os.path.getsize(file2):
-            return False  # 文件大小不同，快速返回
+            return False  # 文件大小不同, 快速返回
             
         hash1 = FileComparer._calculate_hash(file1, chunk_size)
         hash2 = FileComparer._calculate_hash(file2, chunk_size)
@@ -41,7 +41,7 @@ class FileComparer:
         
     @staticmethod
     def _calculate_hash(file_path: str, chunk_size: int = 8192) -> str:
-        """计算文件哈希值，使用分块读取提高大文件性能"""
+        """计算文件哈希值, 使用分块读取提高大文件性能"""
         hash_md5 = hashlib.md5()
         try:
             with open(file_path, "rb") as f:
@@ -204,7 +204,7 @@ class Source:
         检查 path 是否匹配 rule 的表达式
         :param path: 文件/文件夹路径
         :param rule: 一条表达式规则
-        :param root_path: source/sync 根目录路径，用于判断一个路径是否是文件夹
+        :param root_path: source/sync 根目录路径, 用于判断一个路径是否是文件夹
         :return: True - 满足规则, False - 不满足规则
         """
         if os.path.isdir(os.path.join(root_path, path)):
@@ -256,7 +256,7 @@ class ParallelSync(Source):
         :param sync_root_path: 目标同步目录路径
         :param mode: 同步模式 ('date', 'file', 'reset')
         :param interval: 同步间隔时间（秒）
-        :param max_workers: 最大工作线程数，None表示自动检测
+        :param max_workers: 最大工作线程数, None表示自动检测
         """
         super().__init__(source_root_path)
         self.sync_root_path = os.path.abspath(sync_root_path)  # 使用绝对路径
@@ -280,7 +280,7 @@ class ParallelSync(Source):
 
     def confirm_sync(self) -> bool:
         """
-        输出同步信息，并要求用户确认
+        输出同步信息, 并要求用户确认
         若输入不为Enter则终止同步的运行
         """
         print(f"\n{'='*60}")
@@ -293,7 +293,7 @@ class ParallelSync(Source):
         print(f" *忽略模式: {'删除' if self.delete else '忽略'}")
         print(f"{'='*60}")
         
-        user_input = input("按回车键继续，输入任意内容退出: ")
+        user_input = input("按回车键继续, 输入任意内容退出: ")
         return user_input == ""
 
     def compare_files(self, src_file: str, dst_file: str) -> bool:
@@ -368,7 +368,7 @@ class ParallelSync(Source):
                     try:
                         os.makedirs(dst_dir, exist_ok=True)
                     except FileExistsError:
-                        pass  # 目录已存在，忽略错误
+                        pass  # 目录已存在, 忽略错误
                     
                 shutil.copy2(src_file, dst_file)
                 self.logger.log("A", os.path.relpath(dst_file, self.sync_root_path))
@@ -414,12 +414,13 @@ class ParallelSync(Source):
                     
         except Exception as e:
             self.logger.log("ERROR", f"收集同步任务失败: {str(e)}")
+            self.counter.increment("failed")
         
         return tasks
 
     def sync_directory_parallel(self, src_dir: str, dst_dir: str):
         """
-        并行同步目录，包括子目录
+        并行同步目录, 包括子目录
         """
         # 确保目标目录存在
         if not os.path.exists(dst_dir):
@@ -438,7 +439,7 @@ class ParallelSync(Source):
             print("没有文件需要同步")
             return
         
-        print(f"开始并行同步 {len(tasks)} 个文件，使用 {self.max_workers} 个线程...")
+        print(f"开始并行同步 {len(tasks)} 个文件, 使用 {self.max_workers} 个线程...")
         
         # 使用线程池并行处理文件同步
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -454,7 +455,7 @@ class ParallelSync(Source):
                     print(f"进度: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%)")
                 
                 try:
-                    future.result()  # 获取结果，如果有异常会在这里抛出
+                    future.result()  # 获取结果, 如果有异常会在这里抛出
                 except Exception as e:
                     src_file, dst_file = future_to_task[future]
                     self.logger.log("ERROR", f"同步任务异常: {os.path.relpath(src_file, self.source_root_path)} - {str(e)}")
@@ -533,7 +534,7 @@ class ParallelSync(Source):
         
         print(f"开始并行删除 {len(tasks)} 个文件/目录...")
         
-        # 分离文件和目录任务，先删除文件再删除目录
+        # 分离文件和目录任务, 先删除文件再删除目录
         file_tasks = [(path, rel_path, is_file) for path, rel_path, is_file in tasks if is_file]
         dir_tasks = [(path, rel_path, is_file) for path, rel_path, is_file in tasks if not is_file]
         
@@ -558,7 +559,7 @@ class ParallelSync(Source):
     def _is_redundant(self, source_path, sync_path):  # 绝对路径
         """
         判断 sync_path 是否属于 多余文件/目录
-        即: 不在 source 中且不匹配 syncignore 规则，或启用了 delete 并匹配 syncignore 规则
+        即: 不在 source 中且不匹配 syncignore 规则, 或启用了 delete 并匹配 syncignore 规则
         匹配 syncignore 规则: 判断文件/目录的相对路径
         """ 
         ignore = self.is_ignore(sync_path, self.sync_root_path)  # bool
@@ -597,16 +598,16 @@ class ParallelSync(Source):
                 with open(self.log_file, "r", encoding="utf-8") as f:
                     old_logs = f.readlines()
             except Exception as e:
-                self.logger.log("WARNING", f"无法读取旧日志: {str(e)}")
+                self.logger.log("Warning", f"无法读取旧日志: {str(e)}")
         
         self.logger.log("RESET", self.sync_root_path)
         
         try:
-            # 如果目标目录已存在，先删除
+            # 如果目标目录已存在, 先删除
             if os.path.exists(self.sync_root_path):
                 shutil.rmtree(self.sync_root_path)
                 
-            # 复制源目录到目标目录，忽略符合规则的文件
+            # 复制源目录到目标目录, 忽略符合规则的文件
             def ignore_func(src, names):
                 return [name for name in names if self.is_ignore(os.path.join(src, name), self.source_root_path)]
                 
@@ -618,7 +619,7 @@ class ParallelSync(Source):
                     with open(self.log_file, "w", encoding="utf-8") as f:
                         f.writelines(old_logs)
                 except Exception as e:
-                    self.logger.log("WARNING", f"无法恢复旧日志: {str(e)}")
+                    self.logger.log("Warning", f"无法恢复旧日志: {str(e)}")
                     
             return True
         except Exception as e:
@@ -660,11 +661,11 @@ class ParallelSync(Source):
             try:
                 if self.mode == "reset":
                     # 重置模式不需要再调用remove_extra_files
-                    print("执行重置模式，清空目标目录并重新复制...")
+                    print("执行重置模式, 清空目标目录并重新复制...")
                     if self.reset_sync():
                         self.logger.log_summary("重置同步完成")
                     else:
-                        self.logger.log_summary("重置同步失败")
+                        self.logger.log_summary("重置同步失败! 请检查错误")
                 else:
                     # 普通增量同步 - 使用并行处理
                     print("执行增量同步...")
@@ -690,16 +691,16 @@ class ParallelSync(Source):
                 self.logger.log_summary(f"同步任务 {self.source_root_path} -> {self.sync_root_path} 完成")
                 self.logger.save()
                 
-                # 如果间隔为0，则只执行一次
+                # 如果间隔为0, 则只执行一次
                 if self.interval <= 0:
-                    end_message = "已完成单次同步，程序退出"
+                    end_message = "已完成单次同步, 程序退出"
                     self.logger.log_summary(end_message)
                     self.logger.save()
                     break
                     
                 # 显示等待信息
                 next_sync_time = datetime.fromtimestamp(time.time() + self.interval)
-                wait_message = f"\n下次同步将在 {next_sync_time.strftime('%Y-%m-%d %H:%M:%S')} 开始，等待中..."
+                wait_message = f"\n下次同步将在 {next_sync_time.strftime('%Y-%m-%d %H:%M:%S')} 开始, 等待中..."
                 self.logger.log_summary(wait_message)
                 self.logger.save()
                 time.sleep(self.interval)
@@ -729,7 +730,7 @@ def main():
     
     parser.add_argument("-i", "--interval", type=int, default=0, help="同步间隔时间(s), 0 表示仅执行一次; 默认为 0")
     parser.add_argument("-D", "--delete", action="store_true", help="删除目标目录中匹配忽视规则的所有文件")
-    parser.add_argument("-w", "--workers", type=int, default=None, help="最大工作线程数，默认为自动检测 (CPU核心数 * 2)")
+    parser.add_argument("-w", "--workers", type=int, default=None, help="最大工作线程数, 默认为自动检测 (CPU核心数 * 2)")
     
     args = parser.parse_args()
 
