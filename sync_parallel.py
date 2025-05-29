@@ -451,8 +451,8 @@ class ParallelSync(Source):
             completed = 0
             for future in as_completed(future_to_task):
                 completed += 1
-                if completed % 100 == 0 or completed == len(tasks):
-                    print(f"进度: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%)")
+                # if completed % 100 == 0 or completed == len(tasks):
+                #     print(f"进度: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%)")
                 
                 try:
                     future.result()  # 获取结果, 如果有异常会在这里抛出
@@ -547,8 +547,8 @@ class ParallelSync(Source):
                 completed = 0
                 for future in as_completed(futures):
                     completed += 1
-                    if completed % 50 == 0 or completed == len(file_tasks):
-                        print(f"删除文件进度: {completed}/{len(file_tasks)}")
+                    # if completed % 50 == 0 or completed == len(file_tasks):
+                    #     print(f"删除文件进度: {completed}/{len(file_tasks)}")
         
         # 串行删除目录（避免父子目录冲突）
         if dir_tasks:
