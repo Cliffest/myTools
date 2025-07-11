@@ -497,12 +497,15 @@ class ParallelSync(Source):
         :return: 是否成功删除
         """
         try:
+            if not os.path.exists(sync_path):
+                return True
+            
             if is_file:
-                if ".git/objects/" in sync_path.replace("\\", "/"):
-                    if not self.rm_git_objects_file(sync_path):
-                        raise NoTracebackError(f"Remove {sync_path} failed")
-                else: 
-                    os.remove(sync_path)
+                # if ".git/objects/" in sync_path.replace("\\", "/"):
+                #     if not self.rm_git_objects_file(sync_path):
+                #         raise NoTracebackError(f"Remove {sync_path} failed")
+                # else: 
+                os.remove(sync_path)
                 self.logger.log("D", relative_path)
                 self.counter.increment("deleted_files")
             else:
