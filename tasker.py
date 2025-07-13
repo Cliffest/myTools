@@ -53,6 +53,7 @@ class Task:
         self.status:str = status
         assert self.status in ["pending", "running", "completed", "failed", "canceled"], "Invalid status"
     
+    @synchronized("positive")
     def save(self):
         try:
             with open(tasker_file, 'r+') as f:
@@ -137,12 +138,13 @@ class Tasker:
 
 class Operator:
     def __init__(self, _tasker_id: str):
-        global tasker_id, tasker_file, logger, lock_file
+        global tasker_id, logger, tasker_file, lock_file
         tasker_id = _tasker_id
-        tasker_file = Path.home() / "opt" / f".tasker_{tasker_id}.json"
         logger = Logger(name=str(Path.home() / "opt" / f"_tasker_{tasker_id}"), 
                         level="INFO", width=50)
+        tasker_file = Path.home() / "opt" / f".tasker_{tasker_id}.json"
         lock_file = Path.home() / "opt" / f".tasker.{tasker_id}.lock"
+        self.run_file = Path.home() / "opt" / f".tasker.{tasker_id}.run"
         tasker_file.parent.mkdir(parents=True, exist_ok=True)
 
         self.tasker = Tasker()
@@ -183,6 +185,11 @@ class Operator:
         
     def run(self):
         """Run all pending tasks."""
+        if self.run_file.exists():
+            logger.logger.error(f"Tasker {tasker_id} is running. Exiting.")
+            return
+        self.run_file.touch(exist_ok=False)  # Create a run file to indicate running state
+        
         flag, max_wait = False, 3 * (24*(60*60))
         while True:
             n_runs = self.tasker.run()
@@ -197,9 +204,10 @@ class Operator:
                         logger.logger.info("No tasks run for a long time, exiting.")
                         break
                     else: time.sleep(10)  # Wait before checking again
-            
             else:
                 flag = False  # Reset flag if tasks were run
+        
+        self.run_file.unlink()  # Remove run file when done
     
     @synchronized("positive")
     def list(self, only_pending=True):
@@ -282,15 +290,36 @@ class Operator:
             logger.logger.error(f"Invalid position {pos} for removal.")
             return
         
-        self.tasks[pos]["status"] = "canceled"
-        self.save()
-        removed_task = self.tasks[pos]
+        if self.tasks[pos]["status"] == "pending":
+            self.tasks[pos]["status"] = "canceled"
+            self.save()
+            removed_task = self.tasks[pos]
 
-        logger.divider.write(f"Removed task at position {pos}:\n"
-                             f"    Command: {removed_task['cmd']}\n"
-                             f"    Work Directory: {removed_task['wd']}\n")
+            logger.divider.write(f"Removed task at position {pos}:\n"
+                                 f"    Command: {removed_task['cmd']}\n"
+                                 f"    Work Directory: {removed_task['wd']}\n")
+        else:
+            logger.logger.error(f"Error removing task: Not pending.")
         logger.divider.word_line("remove")
 
+    @synchronized("positive")
+    def swap(self, pos1: int, pos2: int):
+        logger.logger.info(f"[USER OPERATION] Swap tasks at position {pos1} and {pos2}")
+        logger.divider.word_line("swap")
+
+        n_tasks = self.load_tasks()
+        if pos1 < 1 or pos1 > n_tasks or pos2 < 1 or pos2 > n_tasks or pos1 == pos2:
+            logger.logger.error(f"Invalid position {pos1} and {pos2} for swap.")
+            return
+        
+        # Swap the tasks
+        self.tasks[pos1], self.tasks[pos2] = self.tasks[pos2], self.tasks[pos1]
+        self.save()
+
+        logger.divider.write(f"Swapped tasks at positions {pos1} and {pos2}, now:\n"
+                             f"{pos1:>5}: {self.tasks[pos1]['cmd']}\n"
+                             f"{pos2:>5}: {self.tasks[pos2]['cmd']}\n")
+        logger.divider.word_line("swap")
 
 def main(args):
     operator = Operator(args.tasker_id)
@@ -318,6 +347,11 @@ def main(args):
     elif args.mode == "rm":
         position = int(input("Position to remove (1-based): "))
         operator.remove(position)
+
+    elif args.mode == "swap":
+        pos1 = int(input("Position 1 to swap (1-based): "))
+        pos2 = int(input("Position 2 to swap (1-based): "))
+        operator.swap(pos1, pos2)
     
     else:
         logger.logger.error(f"Unknown mode: {args.mode}")
