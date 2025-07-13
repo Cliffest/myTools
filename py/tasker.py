@@ -325,6 +325,51 @@ class Operator:
         logger.divider.word_line("remove")
 
     @synchronized("positive")
+    def move(self, pos: int, target_pos: int):
+        """
+        Move the task at position POS (1-based) to TARGET_POS (1-based).
+        Tasks after TARGET_POS will be shifted down.
+        """
+        logger.logger.info(f"[USER OPERATION] Move task from position {pos} to {target_pos}")
+        logger.divider.word_line("move")
+
+        n_tasks = self.load_tasks()
+        if pos == target_pos or (not str(pos) in self.tasks) or (not self.check_position(target_pos, n_tasks)):
+            logger.logger.error(f"Invalid position {pos} -> {target_pos} for move.")
+            return
+        
+        # Move the task
+        task_to_move = self.tasks[str(pos)]
+        unlock()
+        self.remove(pos)
+        self.insert(target_pos, task_to_move["cmd"], task_to_move["wd"])
+        if lock():
+            self.tasks[str(target_pos)]["status"] = task_to_move["status"]  # Preserve status
+            self.save()
+        else:
+            logger.logger.warning("Failed to acquire lock after moving task. "
+                                 f"Error preserving status: {task_to_move["status"]}")
+        
+        logger.divider.write(f"Moved task from position {pos} to {target_pos}:\n"
+                                f"    Command: {task_to_move['cmd']}\n"
+                                f"    Work Directory: {task_to_move['wd']}\n"
+                                f"    Status: {task_to_move['status']}\n")
+        logger.divider.word_line("move")
+
+    @synchronized("positive")
+    def rerun(self, pos: int):
+        """Rerun the task at position POS (1-based)."""
+        logger.logger.info(f"[USER OPERATION] Rerun task at position {pos}")
+        logger.divider.word_line("rerun")
+
+        n_tasks = self.load_tasks()
+        if not self.check_position(pos, n_tasks): return
+        self.tasks[str(pos)]["status"] = "pending"
+        self.save()
+        
+        logger.divider.word_line("rerun")
+
+    @synchronized("positive")
     def swap(self, pos1: int, pos2: int):
         logger.logger.info(f"[USER OPERATION] Swap tasks at position {pos1} and {pos2}")
         logger.divider.word_line("swap")
@@ -369,6 +414,15 @@ def main(args):
     elif args.mode == "rm":
         position = int(input("Position to remove (1-based): "))
         operator.remove(position)
+
+    elif args.mode == "mv":
+        pos = int(input("Position to move (1-based): "))
+        target_pos = int(input("Target position (1-based): "))
+        operator.move(pos, target_pos)
+    
+    elif args.mode == "rerun":
+        position = int(input("Position to rerun (1-based): "))
+        operator.rerun(position)
 
     elif args.mode == "swap":
         pos1 = int(input("Position 1 to swap (1-based): "))
