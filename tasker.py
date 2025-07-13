@@ -24,7 +24,7 @@ def check_lock() -> bool:
 
 def unlock():
     if not lock_file.exists():
-        logger.logger.warning("Failed to unloc - lock file not exists.")
+        logger.logger.warning("Failed to unlock - lock file not exists.")
     lock_file.unlink()
 
 def synchronized(level="negative"):
@@ -47,21 +47,20 @@ def synchronized(level="negative"):
 
 class Task:
     def __init__(self, task_id: int, work_dir: str, command: str, status: str):
-        self.task_id:int = task_id
-        self.work_dir:str = work_dir
-        self.command:str = command
-        self.status:str = status
+        self.task_id: int = task_id
+        self.work_dir: str = work_dir
+        self.command: str = command
+        self.status: str = status
         assert self.status in ["pending", "running", "completed", "failed", "canceled"], "Invalid status"
     
     @synchronized("positive")
     def save(self):
         try:
-            with open(tasker_file, 'r+') as f:
+            with open(tasker_file, 'r') as f:
                 tasks = json.load(f)
-            tasks[self.task_id]["status"] = self.status
-            f.seek(0)
-            json.dump(tasks, f, indent=4)
-            f.truncate()
+            tasks[str(self.task_id)]["status"] = self.status
+            with open(tasker_file, 'w') as f:
+                json.dump(tasks, f, indent=4)
         except Exception as e:
             logger.logger.error(f"Error saving task {self.task_id}: {e}")
 
@@ -99,23 +98,23 @@ class Task:
 
 class Tasker:
     def __init__(self):
-        self.task:Task = None
+        self.task: Task = None
     
     @synchronized("positive")
     def load_task(self, task_id: int) -> str:
         try:
             with open(tasker_file, 'r') as f:
                 tasks = json.load(f)
-            if task_id not in tasks: return "invalid-key"
+            if str(task_id) not in tasks: return "invalid-key"
             self.task = Task(
                 task_id=task_id,
-                work_dir=tasks[task_id]["wd"],
-                command=tasks[task_id]["cmd"],
-                status=tasks[task_id]["status"]
+                work_dir=tasks[str(task_id)]["wd"],
+                command=tasks[str(task_id)]["cmd"],
+                status=tasks[str(task_id)]["status"]
             )
             return "done"
         except Exception as e:
-            logger.logger.error(f"Error loading task {self.task_id}: {e}")
+            logger.logger.error(f"Error loading task {task_id}: {e}")
             return "error"
     
     def run(self) -> int:
@@ -148,7 +147,7 @@ class Operator:
         tasker_file.parent.mkdir(parents=True, exist_ok=True)
 
         self.tasker = Tasker()
-        self.tasks:dict = None
+        self.tasks: dict = None
     
     def load_tasks(self) -> int:
         try:
@@ -166,10 +165,15 @@ class Operator:
             raise SystemError
         
     def check_valid_tasks(self) -> bool:
-        """Check if all task keys are orderd"""
+        """Check if all task keys are ordered"""
         if self.tasks is None:
             return False
-        return list(self.tasks.keys()) == list(range(1, len(self.tasks) + 1))
+        # Convert string keys to integers for comparison
+        try:
+            int_keys = [int(k) for k in self.tasks.keys()]
+            return int_keys == list(range(1, len(self.tasks) + 1))
+        except ValueError:
+            return False
     
     def save(self):
         try:
@@ -191,6 +195,7 @@ class Operator:
         self.run_file.touch(exist_ok=False)  # Create a run file to indicate running state
         
         flag, max_wait = False, 3 * (24*(60*60))
+        start_wait = None  # Initialize start_wait
         while True:
             n_runs = self.tasker.run()
             
@@ -200,10 +205,11 @@ class Operator:
                     start_wait = time.time()
                     flag = True
                 else:
-                    if time.time() - start_wait > max_wait:
+                    if start_wait is not None and time.time() - start_wait > max_wait:
                         logger.logger.info("No tasks run for a long time, exiting.")
                         break
-                    else: time.sleep(10)  # Wait before checking again
+                    else: 
+                        time.sleep(10)  # Wait before checking again
             else:
                 flag = False  # Reset flag if tasks were run
         
@@ -241,7 +247,7 @@ class Operator:
         work_dir = Path(work_dir).resolve()
         n_tasks = self.load_tasks()
         task_id = n_tasks + 1
-        self.tasks[task_id] = {
+        self.tasks[str(task_id)] = {
             "wd": str(work_dir),
             "cmd": command,
             "status": "pending"
@@ -265,13 +271,17 @@ class Operator:
             logger.logger.error(f"Invalid position {pos} for insertion.")
             return
         
-        for i in range(n_tasks, pos - 1, -1):
-            self.tasks[i + 1] = self.tasks[i]
-        self.tasks[pos] = {
+        new_tasks = {}
+        for i in range(1, pos):
+            new_tasks[str(i)] = self.tasks[str(i)]
+        new_tasks[str(pos)] = {
             "wd": str(work_dir),
             "cmd": command,
             "status": "pending"
         }
+        for i in range(pos, n_tasks + 1):
+            new_tasks[str(i + 1)] = self.tasks[str(i)]
+        self.tasks = new_tasks
         self.save()
 
         logger.divider.write(f"Inserted task {pos}:\n"
@@ -290,10 +300,10 @@ class Operator:
             logger.logger.error(f"Invalid position {pos} for removal.")
             return
         
-        if self.tasks[pos]["status"] == "pending":
-            self.tasks[pos]["status"] = "canceled"
+        if self.tasks[str(pos)]["status"] == "pending":
+            self.tasks[str(pos)]["status"] = "canceled"
             self.save()
-            removed_task = self.tasks[pos]
+            removed_task = self.tasks[str(pos)]
 
             logger.divider.write(f"Removed task at position {pos}:\n"
                                  f"    Command: {removed_task['cmd']}\n"
@@ -313,12 +323,12 @@ class Operator:
             return
         
         # Swap the tasks
-        self.tasks[pos1], self.tasks[pos2] = self.tasks[pos2], self.tasks[pos1]
+        self.tasks[str(pos1)], self.tasks[str(pos2)] = self.tasks[str(pos2)], self.tasks[str(pos1)]
         self.save()
 
         logger.divider.write(f"Swapped tasks at positions {pos1} and {pos2}, now:\n"
-                             f"{pos1:>5}: {self.tasks[pos1]['cmd']}\n"
-                             f"{pos2:>5}: {self.tasks[pos2]['cmd']}\n")
+                             f"{pos1:>5}: {self.tasks[str(pos1)]['cmd']}\n"
+                             f"{pos2:>5}: {self.tasks[str(pos2)]['cmd']}\n")
         logger.divider.word_line("swap")
 
 def main(args):
@@ -358,7 +368,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simple queue-based task runner.")
-    parser.append_argument("tasker_id", type=str, help="Tasker ID to identify the task queue")
-    parser.append_argument("mode", type=str, help="Execute mode")
+    parser.add_argument("tasker_id", type=str, help="Tasker ID to identify the task queue")
+    parser.add_argument("mode", type=str, help="Execute mode")
     args = parser.parse_args()
     main(args)
