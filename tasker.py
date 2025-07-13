@@ -1,5 +1,5 @@
 """
-python -m ~/tasker.py <tasker_id> <mode>
+python tasker.py <tasker_id> <mode>
 """
 import argparse
 import functools
@@ -7,8 +7,10 @@ import json
 import subprocess
 import time
 from pathlib import Path
-
-from .logger import Logger
+try:
+    from logger import Logger
+except ImportError:
+    from .logger import Logger
 
 CWD_PATH = Path.cwd()
 
@@ -81,16 +83,19 @@ class Task:
         
         # Run the command
         self.status = "running"
-        logger.logger.info(f"Running task {self.task_id} in '{self.work_dir}': {self.command}")
+        logger.logger.info(f"Running task {self.task_id}: `{self.command}` in '{self.work_dir}'")
         self.save()
         try:
             result = subprocess.run(self.command, shell=True, cwd=self.work_dir)
+            logger.logger.debug(f"Task {self.task_id} command output: {result.stdout if result.stdout else 'No output'}")
+            logger.logger.debug(f"Task {self.task_id} command returncode: {result.returncode}")
             if result.returncode == 0:
                 self.status = "completed"
             else:
                 self.status = "failed"
         except Exception as e:
             self.status = "failed"
+            logger.logger.debug(f"Task {self.task_id} captured by Exception.")
             logger.logger.error(f"Error running task {self.task_id}: {e}")
         finally:
             self.save()
@@ -137,14 +142,16 @@ class Tasker:
 
 class Operator:
     def __init__(self, _tasker_id: str):
-        global tasker_id, logger, tasker_file, lock_file
+        files_dir = Path.home() / "opt" / ".tasker"
+        files_dir.mkdir(parents=True, exist_ok=True)
+
+        global tasker_id, logger, tasker_file, lock_file, run_file
         tasker_id = _tasker_id
-        logger = Logger(name=str(Path.home() / "opt" / f"_tasker_{tasker_id}"), 
-                        level="INFO", width=50)
-        tasker_file = Path.home() / "opt" / f".tasker_{tasker_id}.json"
-        lock_file = Path.home() / "opt" / f".tasker.{tasker_id}.lock"
-        self.run_file = Path.home() / "opt" / f".tasker.{tasker_id}.run"
-        tasker_file.parent.mkdir(parents=True, exist_ok=True)
+        logger = Logger(name=str(files_dir / f"tasker_{tasker_id}"), 
+                        level="DEBUG", width=80, start_from=9)
+        tasker_file = files_dir / f"tasker.{tasker_id}.json"
+        lock_file = files_dir / f"tasker.{tasker_id}.lock"
+        run_file = files_dir / f"tasker.{tasker_id}.run"
 
         self.tasker = Tasker()
         self.tasks: dict = None
@@ -189,10 +196,10 @@ class Operator:
         
     def run(self):
         """Run all pending tasks."""
-        if self.run_file.exists():
+        if run_file.exists():
             logger.logger.error(f"Tasker {tasker_id} is running. Exiting.")
             return
-        self.run_file.touch(exist_ok=False)  # Create a run file to indicate running state
+        run_file.touch(exist_ok=False)  # Create a run file to indicate running state
         
         flag, max_wait = False, 3 * (24*(60*60))
         start_wait = None  # Initialize start_wait
@@ -208,12 +215,16 @@ class Operator:
                     if start_wait is not None and time.time() - start_wait > max_wait:
                         logger.logger.info("No tasks run for a long time, exiting.")
                         break
-                    else: 
-                        time.sleep(10)  # Wait before checking again
+                    else:
+                        try:
+                            time.sleep(10)  # Wait before checking again
+                        except KeyboardInterrupt:
+                            logger.logger.info("Keyboard interrupt received. Exiting.")
+                            break
             else:
                 flag = False  # Reset flag if tasks were run
         
-        self.run_file.unlink()  # Remove run file when done
+        run_file.unlink()  # Remove run file when done
     
     @synchronized("positive")
     def list(self, only_pending=True):
@@ -227,12 +238,12 @@ class Operator:
         n_tasks = self.load_tasks()
         if n_tasks == 0 or ( only_pending and 
                 sum(1 for task in self.tasks.values() if task['status'] == 'pending') == 0 ):
-            logger.divider.write("No tasks in the queue.")
+            logger.divider.write("No tasks in the queue.\n")
         else:
             for task_id, task_info in self.tasks.items():
                 if only_pending and task_info['status'] not in ['pending', 'running']:
                     continue
-                logger.divider.write(f"{task_id:>5} | {task_info['status']}\n"
+                logger.divider.write(f"{task_id:>5} | ---[ {task_info['status']} ]---\n"
                                      f"      | {task_info['cmd']}\n"
                                      f"      | {task_info['wd']}\n")
 
@@ -259,6 +270,12 @@ class Operator:
                              f"    Work Directory: {work_dir}\n")
         logger.divider.word_line("append")
     
+    def check_position(self, pos: int, max_pos: int, min_pos: int=1) -> bool:
+        if pos < min_pos or pos > max_pos:
+            logger.logger.error(f"Invalid position {pos}.")
+            return False
+        return True
+    
     @synchronized("positive")
     def insert(self, pos: int, command: str, work_dir: str=CWD_PATH):
         """Insert a new task before position POS (1-based)."""
@@ -267,9 +284,7 @@ class Operator:
 
         work_dir = Path(work_dir).resolve()
         n_tasks = self.load_tasks()
-        if pos < 1 or pos > n_tasks + 1:
-            logger.logger.error(f"Invalid position {pos} for insertion.")
-            return
+        if not self.check_position(pos, n_tasks + 1): return
         
         new_tasks = {}
         for i in range(1, pos):
@@ -296,10 +311,7 @@ class Operator:
         logger.divider.word_line("remove")
 
         n_tasks = self.load_tasks()
-        if pos < 1 or pos > n_tasks:
-            logger.logger.error(f"Invalid position {pos} for removal.")
-            return
-        
+        if not self.check_position(pos, n_tasks): return
         if self.tasks[str(pos)]["status"] == "pending":
             self.tasks[str(pos)]["status"] = "canceled"
             self.save()
