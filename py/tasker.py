@@ -7,6 +7,7 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from typing import List
 try:
     from logger import Logger
 except ImportError:
@@ -29,7 +30,7 @@ def unlock():
         logger.logger.warning("Failed to unlock - lock file not exists.")
     lock_file.unlink()
 
-def synchronized(level="negative"):
+def synchronized(level="positive"):
     """
     Decorator factory that returns a decorator which
     level is positive: lock the function while running;
@@ -53,9 +54,9 @@ class Task:
         self.work_dir: str = work_dir
         self.command: str = command
         self.status: str = status
-        assert self.status in ["pending", "running", "completed", "failed", "canceled"], "Invalid status"
+        assert self.status in ["pending", "running", "completed", "failed"], "Invalid status"
     
-    @synchronized("positive")
+    @synchronized()
     def save(self):
         try:
             with open(tasker_file, 'r') as f:
@@ -101,41 +102,60 @@ class Task:
             self.save()
             logger.logger.info(f"Task {self.task_id} finished with status: {self.status}")
 
+def load_tasks() -> dict:
+    """ **Should be wrapped with lock**. Return 'failure' on error. """
+    try:
+        with open(tasker_file, 'r') as f:
+            tasks = json.load(f)
+        return tasks
+    except FileNotFoundError:
+        logger.logger.warning(f"Tasks file not found. Creating a new one.")
+        with open(tasker_file, 'w') as f:
+            json.dump({}, f)
+        return {}
+    except Exception as e:
+        logger.logger.error(f"Error loading tasks: {e}")
+        return "failure"
+
 class Tasker:
     def __init__(self):
         self.task: Task = None
     
-    @synchronized("positive")
-    def load_task(self, task_id: int) -> str:
+    @synchronized()
+    def load_1st_pending_task(self) -> bool:
+        """ Return 'failure' on error. """
+        tasks = load_tasks()
+        if tasks == "failure": return "failure"
+        
         try:
-            with open(tasker_file, 'r') as f:
-                tasks = json.load(f)
-            if str(task_id) not in tasks: return "invalid-key"
-            self.task = Task(
-                task_id=task_id,
-                work_dir=tasks[str(task_id)]["wd"],
-                command=tasks[str(task_id)]["cmd"],
-                status=tasks[str(task_id)]["status"]
-            )
-            return "done"
+            for task_id in sorted(tasks.keys(), key=int):
+                if tasks[task_id]["status"] == "pending":
+                    self.task = Task(
+                        task_id=int(task_id),
+                        work_dir=tasks[task_id]["wd"],
+                        command=tasks[task_id]["cmd"],
+                        status=tasks[task_id]["status"]
+                    )
+                    return True
+            return False  # No pending tasks found
         except Exception as e:
-            logger.logger.error(f"Error loading task {task_id}: {e}")
-            return "error"
+            logger.logger.error(f"Error loading pending task: {e}")
+            return False
     
     def run(self) -> int:
         """
         Run all pending tasks, and return the count of tasks run. 
+        Return 'failure' on error.
         """
-        i, count = 0, 0
+        count = 0
         while True:
-            i += 1
-            status = self.load_task(i)
-            if status == "invalid-key": break
-            elif status == "error": 
-                count += 1
-                continue
-
-            if self.task.status == "pending":
+            status = self.load_1st_pending_task()
+            if status == "failure": 
+                return "failure"
+            
+            if not status:  # No more pending tasks or error occurred
+                break
+            elif status:
                 count += 1
                 self.task.run()
         return count
@@ -155,44 +175,7 @@ class Operator:
 
         self.tasker = Tasker()
         self.tasks: dict = None
-    
-    def load_tasks(self) -> int:
-        try:
-            with open(tasker_file, 'r') as f:
-                self.tasks = json.load(f)
-            return len(self.tasks)
-        except FileNotFoundError:
-            logger.logger.warning(f"Tasks file not found. Creating a new one.")
-            self.tasks = {}
-            with open(tasker_file, 'w') as f:
-                json.dump({}, f)  # Create an empty task file
-            return 0
-        except Exception as e:
-            logger.logger.critical(f"Error loading tasks: {e}")
-            raise SystemError
-        
-    def check_valid_tasks(self) -> bool:
-        """Check if all task keys are ordered"""
-        if self.tasks is None:
-            return False
-        # Convert string keys to integers for comparison
-        try:
-            int_keys = [int(k) for k in self.tasks.keys()]
-            return int_keys == list(range(1, len(self.tasks) + 1))
-        except ValueError:
-            return False
-    
-    def save(self):
-        try:
-            with open(tasker_file, 'w') as f:
-                json.dump(self.tasks, f, indent=4)
-        except Exception as e:
-            logger.logger.critical(f"Error saving tasks: {e}")
-            raise SystemError
-        
-        if not self.check_valid_tasks():
-            logger.logger.critical(f"Invalid tasks.")
-            raise SystemError
+        self.n_tasks: int = None
         
     def run(self):
         """Run all pending tasks."""
@@ -205,6 +188,9 @@ class Operator:
         start_wait = None  # Initialize start_wait
         while True:
             n_runs = self.tasker.run()
+            if n_runs == "failure":
+                logger.logger.critical("Error running tasks. Require manual intervention.")
+                break
             
             if n_runs == 0:
                 if not flag:  # First time no tasks to run
@@ -226,7 +212,26 @@ class Operator:
         
         run_file.unlink()  # Remove run file when done
     
-    @synchronized("positive")
+    def _load_tasks(self) -> bool:
+        """ **Should be wrapped with lock** """
+        self.tasks = load_tasks()
+        if self.tasks == "failure": 
+            return False
+        self.n_tasks = len(self.tasks)
+        return True
+    
+    def check_valid_tasks(self) -> bool:
+        """ Check if all task keys are ordered. Run after loading tasks. """
+        if self.tasks is None:
+            return False
+        # Convert string keys to integers for comparison
+        try:
+            int_keys = [int(k) for k in self.tasks.keys()]
+            return int_keys == list(range(1, len(self.tasks) + 1))
+        except ValueError:
+            return False
+    
+    @synchronized()
     def list(self, only_pending=True):
         """
         List all tasks.
@@ -235,40 +240,33 @@ class Operator:
         logger.logger.info(f"[USER OPERATION] List all {'pending' if only_pending else ''} tasks")
         logger.divider.word_line("list")
         
-        n_tasks = self.load_tasks()
-        if n_tasks == 0 or ( only_pending and 
-                sum(1 for task in self.tasks.values() if task['status'] == 'pending') == 0 ):
-            logger.divider.write("No tasks in the queue.\n")
-        else:
-            for task_id, task_info in self.tasks.items():
-                if only_pending and task_info['status'] not in ['pending', 'running']:
-                    continue
-                logger.divider.write(f"{task_id:>5} | ---[ {task_info['status']} ]---\n"
-                                     f"      | {task_info['cmd']}\n"
-                                     f"      | {task_info['wd']}\n")
+        if self._load_tasks():
+            if not self.check_valid_tasks():
+                logger.logger.error("Task keys are not ordered. Please run `tasker.py <tasker_id> fix` to fix it.")
+                
+            elif self.n_tasks == 0 or ( only_pending and 
+                    sum(1 for task in self.tasks.values() if task['status'] == 'pending') == 0 ):
+                logger.divider.write("No tasks in the queue.\n")
+            else:
+                for task_id, task_info in self.tasks.items():
+                    if only_pending and task_info['status'] not in ['pending', 'running']:
+                        continue
+                    logger.divider.write(f"{task_id:>5} | ---[ {task_info['status']} ]---\n"
+                                        f"      | {task_info['cmd']}\n"
+                                        f"      | {task_info['wd']}\n")
+        else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
 
         logger.divider.word_line("list")
     
-    @synchronized("positive")
-    def append(self, command: str, work_dir: str=CWD_PATH):
-        """Append a new task to the queue."""
-        logger.logger.info(f"[USER OPERATION] Appended task")
-        logger.divider.word_line("append")
-
-        work_dir = Path(work_dir).resolve()
-        n_tasks = self.load_tasks()
-        task_id = n_tasks + 1
-        self.tasks[str(task_id)] = {
-            "wd": str(work_dir),
-            "cmd": command,
-            "status": "pending"
-        }
-        self.save()
-
-        logger.divider.write(f"Appended task {task_id}:\n"
-                             f"    Command: {command}\n"
-                             f"    Work Directory: {work_dir}\n")
-        logger.divider.word_line("append")
+    def save(self) -> bool:
+        """ **Should be wrapped with lock** """
+        try:
+            with open(tasker_file, 'w') as f:
+                json.dump(self.tasks, f, indent=4)
+            return True
+        except Exception as e:
+            logger.logger.error(f"Error saving tasks: {e}")
+            return False
     
     def check_position(self, pos: int, max_pos: int, min_pos: int=1) -> bool:
         if pos < min_pos or pos > max_pos:
@@ -276,117 +274,255 @@ class Operator:
             return False
         return True
     
-    @synchronized("positive")
+    def insert_task(self, pos: int, task_info: dict) -> bool:
+        """
+        **Should be wrapped with lock**.
+        Insert a task at position POS.
+        Task info should be a dictionary with keys 'wd', 'cmd', and 'status'.
+        """
+        if not self.check_position(pos, self.n_tasks + 1):
+            return False
+        
+        try:
+            for i in list(range(pos + 1, self.n_tasks+1 + 1)).reverse():
+                self.tasks[str(i)] = self.tasks[str(i - 1)]
+            self.tasks[str(pos)] = task_info
+            self.n_tasks += 1
+            return True
+        except Exception as e:
+            return False
+    
+    def remove_task(self, pos: int) -> dict:
+        """
+        **Should be wrapped with lock**.
+        Remove the task at position POS and return its task info.
+        Return 'False' on error.
+        """
+        if not self.check_position(pos, self.n_tasks):
+            return False
+        
+        try:
+            removed_task = self.tasks.pop(str(pos))
+            self.n_tasks -= 1
+            # Shift tasks down
+            for i in range(pos, self.n_tasks + 1):
+                self.tasks[str(i)] = self.tasks.pop(str(i + 1))
+            return removed_task
+        except Exception as e:
+            return False
+    
+    @synchronized()
+    def append(self, command: str, work_dir: str=CWD_PATH):
+        """Append a new task to the queue."""
+        logger.logger.info(f"[USER OPERATION] Appended task")
+        logger.divider.word_line("append")
+
+        work_dir = Path(work_dir).resolve()
+        if self._load_tasks():
+            if not self.check_valid_tasks():
+                logger.logger.error("Task keys are not ordered. Please run `tasker.py <tasker_id> fix` to fix it.")
+
+            elif self.insert_task(self.n_tasks + 1, {
+                    "wd": str(work_dir),
+                    "cmd": command,
+                    "status": "pending"
+                }):
+                if self.save():
+                    logger.divider.write(f"Appended task {self.n_tasks + 1}:\n"
+                                        f"    Command: {command}\n"
+                                        f"    Work Directory: {work_dir}\n")
+                else: logger.logger.error("Error saving tasks after appending.")
+            else: logger.logger.error("Error appending task. Exiting.")
+        else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+        
+        logger.divider.word_line("append")
+    
+    @synchronized()
     def insert(self, pos: int, command: str, work_dir: str=CWD_PATH):
-        """Insert a new task before position POS (1-based)."""
+        """Insert a new task before position POS."""
         logger.logger.info(f"[USER OPERATION] Insert task at position {pos}")
         logger.divider.word_line("insert")
 
         work_dir = Path(work_dir).resolve()
-        n_tasks = self.load_tasks()
-        if not self.check_position(pos, n_tasks + 1): return
-        
-        new_tasks = {}
-        for i in range(1, pos):
-            new_tasks[str(i)] = self.tasks[str(i)]
-        new_tasks[str(pos)] = {
-            "wd": str(work_dir),
-            "cmd": command,
-            "status": "pending"
-        }
-        for i in range(pos, n_tasks + 1):
-            new_tasks[str(i + 1)] = self.tasks[str(i)]
-        self.tasks = new_tasks
-        self.save()
+        if self._load_tasks():
+            if not self.check_valid_tasks():
+                logger.logger.error("Task keys are not ordered. Please run `tasker.py <tasker_id> fix` to fix it.")
 
-        logger.divider.write(f"Inserted task {pos}:\n"
-                             f"    Command: {command}\n"
-                             f"    Work Directory: {work_dir}\n")
+            elif self.insert_task(pos, {
+                    "wd": str(work_dir),
+                    "cmd": command,
+                    "status": "pending"
+                }):
+                if self.save():
+                    logger.divider.write(f"Inserted task at position {pos}:\n"
+                                        f"    Command: {command}\n"
+                                        f"    Work Directory: {work_dir}\n")
+                else: logger.logger.error("Error saving tasks after inserting.")
+            else: logger.logger.error("Error inserting task. Exiting.")
+        else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+
         logger.divider.word_line("insert")
 
-    @synchronized("positive")
+    @synchronized()
     def remove(self, pos: int):
-        """Remove the task at position POS (1-based)."""
+        """Remove the task at position POS."""
         logger.logger.info(f"[USER OPERATION] Remove task at position {pos}")
         logger.divider.word_line("remove")
 
-        n_tasks = self.load_tasks()
-        if not self.check_position(pos, n_tasks): return
-        if self.tasks[str(pos)]["status"] == "pending":
-            self.tasks[str(pos)]["status"] = "canceled"
-            self.save()
-            removed_task = self.tasks[str(pos)]
+        if self._load_tasks():
+            if not self.check_valid_tasks():
+                logger.logger.error("Task keys are not ordered. Please run `tasker.py <tasker_id> fix` to fix it.")
+            
+            else:
+                confirm = input(f"Task status at position {pos} is {self.tasks[str(pos)]['status']}. \n"
+                                 "Are you sure you want to remove it? (y/n): ").strip().lower
+                if confirm == 'y':
+                    removed_task = self.remove_task(pos)
+                    if removed_task:
+                        if self.save():
+                            logger.divider.write(f"Removed task at position {pos}:\n"
+                                                f"    Command: {removed_task['cmd']}\n"
+                                                f"    Work Directory: {removed_task['wd']}\n"
+                                                f"    Status: {removed_task['status']}\n")
+                        else: logger.logger.error("Error saving tasks after removing.")
+                    else: logger.logger.error("Error removing task. Exiting.")
+                else:logger.logger.error(f"Canceled removing task at position {pos}.")
+        else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
 
-            logger.divider.write(f"Removed task at position {pos}:\n"
-                                 f"    Command: {removed_task['cmd']}\n"
-                                 f"    Work Directory: {removed_task['wd']}\n")
-        else:
-            logger.logger.error(f"Error removing task: Not pending.")
         logger.divider.word_line("remove")
 
-    @synchronized("positive")
+    @synchronized()
     def move(self, pos: int, target_pos: int):
         """
-        Move the task at position POS (1-based) to TARGET_POS (1-based).
-        Tasks after TARGET_POS will be shifted down.
+        Move the task at position POS to TARGET_POS.
         """
         logger.logger.info(f"[USER OPERATION] Move task from position {pos} to {target_pos}")
         logger.divider.word_line("move")
 
-        n_tasks = self.load_tasks()
-        if pos == target_pos or (not str(pos) in self.tasks) or (not self.check_position(target_pos, n_tasks)):
-            logger.logger.error(f"Invalid position {pos} -> {target_pos} for move.")
-            return
-        
-        # Move the task
-        task_to_move = self.tasks[str(pos)]
-        unlock()
-        self.remove(pos)
-        self.insert(target_pos, task_to_move["cmd"], task_to_move["wd"])
-        if lock():
-            self.tasks[str(target_pos)]["status"] = task_to_move["status"]  # Preserve status
-            self.save()
-        else:
-            logger.logger.warning("Failed to acquire lock after moving task. "
-                                 f"Error preserving status: {task_to_move["status"]}")
-        
-        logger.divider.write(f"Moved task from position {pos} to {target_pos}:\n"
-                                f"    Command: {task_to_move['cmd']}\n"
-                                f"    Work Directory: {task_to_move['wd']}\n"
-                                f"    Status: {task_to_move['status']}\n")
+        if self._load_tasks():
+            if not self.check_valid_tasks():
+                logger.logger.error("Task keys are not ordered. Please run `tasker.py <tasker_id> fix` to fix it.")
+            
+            elif pos == target_pos:
+                logger.logger.error(f"Invalid position {pos} -> {target_pos}.")
+            elif self.insert_task(target_pos, self.tasks[str(pos)]) and self.remove_task(pos if pos < target_pos else pos + 1):
+                if self.save():
+                    logger.divider.write(f"Moved task from position {pos} to {target_pos}:\n"
+                                        f"    Command: {self.tasks[str(target_pos)]['cmd']}\n"
+                                        f"    Work Directory: {self.tasks[str(target_pos)]['wd']}\n")
+                else: logger.logger.error("Error saving tasks after moving.")
+            else: logger.logger.error("Error moving task. Exiting.")
+        else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+
         logger.divider.word_line("move")
 
-    @synchronized("positive")
+    @synchronized()
     def rerun(self, pos: int):
-        """Rerun the task at position POS (1-based)."""
+        """Rerun the task at position POS."""
         logger.logger.info(f"[USER OPERATION] Rerun task at position {pos}")
         logger.divider.word_line("rerun")
 
-        n_tasks = self.load_tasks()
-        if not self.check_position(pos, n_tasks): return
-        self.tasks[str(pos)]["status"] = "pending"
-        self.save()
+        if self._load_tasks():
+            if not self.check_valid_tasks():
+                logger.logger.error("Task keys are not ordered. Please run `tasker.py <tasker_id> fix` to fix it.")
+
+            elif self.check_position(pos, self.n_tasks): 
+                self.tasks[str(pos)]["status"] = "pending"
+                if self.save():
+                    logger.divider.write(f"Rerun task at position {pos}:\n"
+                                        f"    Command: {self.tasks[str(pos)]['cmd']}\n"
+                                        f"    Work Directory: {self.tasks[str(pos)]['wd']}\n")
+                else: logger.logger.error("Error saving tasks after rerun.")
+            else: logger.logger.error(f"Invalid position {pos} for rerun.")
+        else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
         
         logger.divider.word_line("rerun")
 
-    @synchronized("positive")
+    @synchronized()
     def swap(self, pos1: int, pos2: int):
         logger.logger.info(f"[USER OPERATION] Swap tasks at position {pos1} and {pos2}")
         logger.divider.word_line("swap")
 
-        n_tasks = self.load_tasks()
-        if pos1 < 1 or pos1 > n_tasks or pos2 < 1 or pos2 > n_tasks or pos1 == pos2:
-            logger.logger.error(f"Invalid position {pos1} and {pos2} for swap.")
-            return
+        if self._load_tasks():
+            if not self.check_valid_tasks():
+                logger.logger.error("Task keys are not ordered. Please run `tasker.py <tasker_id> fix` to fix it.")
+            
+            elif pos1 == pos2 or not self.check_position(pos1, self.n_tasks) or not self.check_position(pos2, self.n_tasks):
+                logger.logger.error(f"Invalid position {pos1} and {pos2} for swap.")
+            else:
+                self.tasks[str(pos1)], self.tasks[str(pos2)] = self.tasks[str(pos2)], self.tasks[str(pos1)]
+                if self.save():
+                    logger.divider.write(f"Swapped tasks at positions {pos1} and {pos2}, now:\n"
+                                         f"{pos1:>5}: {self.tasks[str(pos1)]['cmd']}\n"
+                                         f"{pos2:>5}: {self.tasks[str(pos2)]['cmd']}\n")
+                else: logger.logger.error("Error saving tasks after swap.")
+        else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
         
-        # Swap the tasks
-        self.tasks[str(pos1)], self.tasks[str(pos2)] = self.tasks[str(pos2)], self.tasks[str(pos1)]
-        self.save()
-
-        logger.divider.write(f"Swapped tasks at positions {pos1} and {pos2}, now:\n"
-                             f"{pos1:>5}: {self.tasks[str(pos1)]['cmd']}\n"
-                             f"{pos2:>5}: {self.tasks[str(pos2)]['cmd']}\n")
         logger.divider.word_line("swap")
+    
+    @synchronized()
+    def clear(self, status: List[str]=["completed"]):
+        """
+        Clear tasks with the given status.
+        Status can be 'pending', 'running', 'completed', or 'failed'.
+        """
+        logger.logger.info(f"[USER OPERATION] Clear tasks with status: {','.join(status)}")
+        logger.divider.word_line("clear")
+
+        if not all(s in ["pending", "running", "completed", "failed"] for s in status):
+            logger.logger.error(f"Invalid status {status}. Must be one of 'pending', 'running', 'completed', or 'failed'.")
+
+        elif self._load_tasks():
+            if not self.check_valid_tasks():
+                logger.logger.error("Task keys are not ordered. Please run `tasker.py <tasker_id> fix` to fix it.")
+            
+            else:
+                tasks_to_remove = [k for k, v in self.tasks.items() if v['status'] in status]
+                if not tasks_to_remove:
+                    logger.logger.info("No tasks with specific status found.")
+                else:
+                    confirm = input(f"{len(tasks_to_remove)} tasks, at {', '.join(tasks_to_remove)} will be removed. \n"
+                                    "Are you sure you want to remove them? (y/n): ").strip().lower
+                    if confirm == 'y':
+                        cleared = []
+                        for task_id in tasks_to_remove:
+                            if self.remove_task(int(task_id)):
+                                cleared.append(task_id)
+                            else: logger.logger.error(f"Error removing task {task_id}.")
+                        if self.save():
+                            logger.divider.write(f"Cleared {len(cleared)} tasks:\n" 
+                                                f"{', '.join(cleared)}.\n")
+                        else: logger.logger.error("Error saving tasks after clearing.")
+                    else: logger.logger.error(f"Canceled clearing tasks with specific status.")
+        else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+
+        logger.divider.word_line("clear")
+    
+    @synchronized()
+    def fix(self):
+        """
+        Fix the task keys to be ordered.
+        This should be run if the task keys are not ordered.
+        """
+        logger.logger.info("[USER OPERATION] Fix task keys")
+        logger.divider.word_line("fix")
+
+        if self._load_tasks():
+            if self.check_valid_tasks():
+                logger.logger.info("Task keys are already ordered.")
+            else:
+                task_ids = sorted(self.tasks.keys(), key=int)
+                if len(task_ids) == self.n_tasks:
+                    new_tasks = {str(i): self.tasks[task_ids[i - 1]] 
+                                   for i in range(1, self.n_tasks + 1)}
+                    self.tasks = new_tasks
+                    if self.save():
+                        logger.divider.write("Fixed task keys. Now they are ordered.\n")
+                    else: logger.logger.error("Error saving tasks after fixing.")
+                else: logger.logger.error("Failed to fix task keys. Number of task IDs and tasks not match.")
+        else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+
+        logger.divider.word_line("fix")
 
 def main(args):
     operator = Operator(args.tasker_id)
@@ -406,28 +542,59 @@ def main(args):
         operator.append(command, work_dir)
     
     elif args.mode == "in":
-        position = int(input("Position to insert at (1-based): "))
+        position = int(input("Position to insert at: "))
         command = input("Command: ").strip()
         work_dir = input(f"Work directory: (default '.') ").strip() or CWD_PATH
         operator.insert(position, command, work_dir)
     
     elif args.mode == "rm":
-        position = int(input("Position to remove (1-based): "))
+        position = int(input("Position to remove: "))
         operator.remove(position)
 
     elif args.mode == "mv":
-        pos = int(input("Position to move (1-based): "))
-        target_pos = int(input("Target position (1-based): "))
+        pos = int(input("Position to move: "))
+        target_pos = int(input("Target position: "))
         operator.move(pos, target_pos)
     
     elif args.mode == "rerun":
-        position = int(input("Position to rerun (1-based): "))
+        position = int(input("Position to rerun: "))
         operator.rerun(position)
 
     elif args.mode == "swap":
-        pos1 = int(input("Position 1 to swap (1-based): "))
-        pos2 = int(input("Position 2 to swap (1-based): "))
+        pos1 = int(input("Position 1 to swap: "))
+        pos2 = int(input("Position 2 to swap: "))
         operator.swap(pos1, pos2)
+    
+    elif args.mode == "clear":
+        status_str = input("Status to clear: p - pending, \n"
+                           "                 r - running, \n"
+                           "                 c - completed, \n"
+                           "                 f - failed. \n"
+                           "(default is c): ").strip().lower()
+        if not status_str: status_str = "c"
+        status = []
+        if "p" in status_str: status.append("pending")
+        if "r" in status_str: status.append("running")
+        if "c" in status_str: status.append("completed")
+        if "f" in status_str: status.append("failed")
+        operator.clear(status)
+    
+    elif args.mode == "fix":
+        operator.fix()
+    
+    elif args.mode == "help":
+        print("Available modes:")
+        print("  run       - Run all pending tasks")
+        print("  ls        - List all pending tasks")
+        print("  lsall     - List all tasks")
+        print("  add       - Add a new task")
+        print("  in        - Insert a task at a specific position")
+        print("  rm        - Remove a task at a specific position")
+        print("  mv        - Move a task to a different position")
+        print("  rerun     - Rerun a task at a specific position")
+        print("  swap      - Swap two tasks at specified positions")
+        print("  clear     - Clear tasks with specific status")
+        print("  fix       - Fix task keys to be ordered")
     
     else:
         logger.logger.error(f"Unknown mode: {args.mode}")
