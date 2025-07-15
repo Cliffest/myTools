@@ -307,7 +307,7 @@ class Operator:
         List all tasks.
         'only_pending' to show pending and running tasks.
         """
-        logger.logger.info(f"[USER OPERATION] List all {'pending' if only_pending else ''} tasks")
+        logger.logger.info(f"[USER OPERATION] List all {'pending ' if only_pending else ''}tasks")
         logger.divider.word_line("list")
         try:
             if self._load_tasks():
@@ -638,7 +638,7 @@ class Operator:
                                     for i in range(1, self.n_tasks + 1)}
                         self.tasks = new_tasks
                         if self.save():
-                            logger.divider.write("Fixed task keys. Now they are ordered.\n")
+                            logger.divider.write(f"Fixed task keys. Now they are ordered: {', '.join(self.tasks.keys())}.\n")
                         else: logger.logger.error("Error saving tasks after fixing.")
                     else: logger.logger.error("Failed to fix task keys. Number of task IDs and tasks not match.")
             else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
