@@ -30,7 +30,7 @@ def check_lock() -> bool:
 def unlock():
     if not lock_file.exists():
         logger.logger.warning("Failed to unlock - lock file not exists.")
-    lock_file.unlink()
+    else: lock_file.unlink()
 
 def synchronized(level="positive"):
     """
@@ -65,7 +65,7 @@ class Task:
                 tasks = json.load(f)
             found = False
             for k, v in tasks.items():  # The first task whose command is same with the current task
-                if v["work_dir"] == self.work_dir and v["command"] == self.command:
+                if v["wd"] == self.work_dir and v["cmd"] == self.command:
                     tasks[k]["status"], found = self.status, True
             if not found:  # If not found, add a new task
                 task_id: int = len(tasks) + 1
@@ -85,6 +85,7 @@ class Task:
         except KeyboardInterrupt:
             logger.logger.info(f"Keyboard interrupt received while saving task {self.task_id}. "
                                "This may cause fatal error. Please check.")
+        finally: pass
 
     def run(self):
         """
@@ -105,8 +106,12 @@ class Task:
         logger.logger.info(f"Running task {self.task_id}: `{self.command}` in '{self.work_dir}'")
         self.save()
         try:
-            result = subprocess.run(self.command, shell=True, cwd=self.work_dir)
-            logger.logger.debug(f"Task {self.task_id} command output: {result.stdout if result.stdout else 'No output'}")
+            if log_level == "DEBUG":
+                result = subprocess.run(self.command, shell=True, cwd=self.work_dir, capture_output=True, text=True)
+            else:
+                result = subprocess.run(self.command, shell=True, cwd=self.work_dir)
+            if result.stdout: logger.logger.debug(f"Task {self.task_id} stdout: {result.stdout}")
+            if result.stderr: logger.logger.debug(f"Task {self.task_id} stderr: {result.stderr}")
             if result.returncode == 0:
                 self.status = "completed"
             else:
@@ -139,6 +144,7 @@ def load_tasks() -> dict:
     except KeyboardInterrupt:
         logger.logger.info("Keyboard interrupt received while loading tasks.")
         return "failure"
+    finally: pass
 
 class Tasker:
     def __init__(self):
@@ -148,7 +154,7 @@ class Tasker:
     def load_1st_pending_task(self) -> bool:
         """ Return 'failure' on error. """
         tasks = load_tasks()
-        if tasks == "failure": return "failure"
+        if not isinstance(tasks, dict): return "failure"
         
         try:
             for task_id in sorted(tasks.keys(), key=int):
@@ -168,6 +174,7 @@ class Tasker:
         except KeyboardInterrupt:
             logger.logger.info("Keyboard interrupt received while loading pending task.")
             return "failure"
+        finally: pass
     
     def run(self) -> int:
         """
@@ -178,7 +185,7 @@ class Tasker:
         while True:
             status = self.load_1st_pending_task()
             
-            if status == "failure":  # Error occurred
+            if status == "failure" or status is None:  # Error occurred
                 return "failure"
             elif not status:  # No more pending tasks
                 break
@@ -210,47 +217,48 @@ class Operator:
         if run_file.exists():
             logger.logger.error(f"Tasker {tasker_id} is running. Exiting.")
             return
-        run_file.touch(exist_ok=False)  # Create a run file to indicate running state
-        
-        flag, max_wait = False, 3 * (24*(60*60))
-        start_wait = None  # Initialize start_wait
-        while True:
-            run_file.touch(exist_ok=True)  # Make sure the run file exists
+        try:
+            run_file.touch(exist_ok=False)  # Create a run file to indicate running state
             
-            n_runs = self.tasker.run()
-            try:
-                if n_runs == "failure":
-                    logger.logger.critical("Error running tasks. Require manual intervention.")
-                    break
+            flag, start_wait, max_wait = False, None, 3 * (24*(60*60))
+            while True:
+                run_file.touch(exist_ok=True)  # Make sure the run file exists
                 
-                if n_runs == 0:
-                    if not flag:  # First time no tasks to run
-                        logger.logger.info("All tasks done. Waiting for new tasks...")
-                        start_wait = time.time()
-                        flag = True
-                    else:
-                        if start_wait is not None and time.time() - start_wait > max_wait:
-                            logger.logger.info("No tasks run for a long time, exiting.")
-                            break
+                n_runs = self.tasker.run()
+                try:
+                    if n_runs == "failure":
+                        logger.logger.critical("Error running tasks. Require manual intervention.")
+                        break
+                    
+                    if n_runs == 0:
+                        if not flag:  # First time no tasks to run
+                            logger.logger.info("All tasks done. Waiting for new tasks...")
+                            start_wait = time.time()
+                            flag = True
                         else:
-                            run_file.touch(exist_ok=True)  # Make sure the run file exists
-                            time.sleep(10)  # Wait before checking again
-                else:
-                    flag = False  # Reset flag if tasks were run
-            
-            except KeyboardInterrupt:
-                logger.logger.info("Keyboard interrupt received. Exiting.")
-                break
-            except Exception as e:
-                logger.logger.error(f"Unexpected error when running: {e}")
-                break
-        
-        run_file.unlink()  # Remove run file when done
+                            if start_wait is not None and time.time() - start_wait > max_wait:
+                                logger.logger.info("No tasks run for a long time, exiting.")
+                                break
+                            else:
+                                run_file.touch(exist_ok=True)  # Make sure the run file exists
+                                time.sleep(10)  # Wait before checking again
+                    else:
+                        flag = False  # Reset flag if tasks were run
+                
+                except KeyboardInterrupt:
+                    logger.logger.info("Keyboard interrupt received. Exiting.")
+                    break
+                except Exception as e:
+                    logger.logger.error(f"Unexpected error when running: {e}")
+                    break
+        finally:
+            if run_file.exists(): run_file.unlink()  # Remove run file when done
+            else: logger.logger.warning("Run file not found after the run done.")
     
     def _load_tasks(self) -> bool:
         """ **Should be wrapped with lock** """
         self.tasks = load_tasks()
-        if self.tasks == "failure": 
+        if not isinstance(self.tasks, dict): 
             return False
         self.n_tasks = len(self.tasks)
         return True
@@ -344,7 +352,7 @@ class Operator:
             return False
         
         try:
-            for i in list(range(pos + 1, self.n_tasks+1 + 1)).reverse():
+            for i in reversed(range(pos+1, self.n_tasks+1 + 1)):
                 self.tasks[str(i)] = self.tasks[str(i - 1)]
             self.tasks[str(pos)] = task_info
             self.n_tasks += 1
@@ -378,13 +386,13 @@ class Operator:
         logger.logger.info(f"[USER OPERATION] Appended task")
         logger.divider.word_line("append")
         try:
-            work_dir = Path(work_dir).resolve()
+            work_dir = str(Path(work_dir).resolve())
             if self._load_tasks():
                 if not self.check_valid_tasks():
                     logger.logger.error(f"Task keys are not ordered. Please run `tasker.py {tasker_id} fix` to fix it.")
 
                 elif self.insert_task(self.n_tasks + 1, {
-                        "wd": str(work_dir),
+                        "wd": work_dir,
                         "cmd": command,
                         "status": "pending"
                     }):
@@ -406,14 +414,14 @@ class Operator:
         logger.logger.info(f"[USER OPERATION] Insert task at position {pos}")
         logger.divider.word_line("insert")
         try:
-            work_dir = Path(work_dir).resolve()
+            work_dir = str(Path(work_dir).resolve())
             if self._load_tasks():
                 if pos == -1: pos = self.n_tasks
                 if not self.check_valid_tasks():
                     logger.logger.error(f"Task keys are not ordered. Please run `tasker.py {tasker_id} fix` to fix it.")
 
                 elif self.insert_task(pos, {
-                        "wd": str(work_dir),
+                        "wd": work_dir,
                         "cmd": command,
                         "status": "pending"
                     }):
@@ -442,7 +450,7 @@ class Operator:
                 
                 else:
                     confirm = input(f"Task status at position {pos} is {self.tasks[str(pos)]['status']}. \n"
-                                    "Are you sure you want to remove it? (y/n): ").strip().lower
+                                    "Are you sure you want to remove it? (y/n): ").strip().lower()
                     if confirm == 'y':
                         removed_task = self.remove_task(pos)
                         if removed_task:
@@ -562,7 +570,7 @@ class Operator:
                         logger.logger.info("No tasks with specific status found.")
                     else:
                         confirm = input(f"{len(tasks_to_remove)} tasks, at {', '.join(tasks_to_remove)} will be removed. \n"
-                                        "Are you sure you want to remove them? (y/n): ").strip().lower
+                                        "Are you sure you want to remove them? (y/n): ").strip().lower()
                         if confirm == 'y':
                             cleared = []
                             for task_id in tasks_to_remove:
@@ -654,8 +662,7 @@ def main(args):
                            "                 r - running, \n"
                            "                 c - completed, \n"
                            "                 f - failed. \n"
-                           "(default is c): ").strip().lower()
-        if not status_str: status_str = "c"
+                           "(default is c): ").strip().lower() or "c"
         status = []
         if "p" in status_str: status.append("pending")
         if "r" in status_str: status.append("running")
