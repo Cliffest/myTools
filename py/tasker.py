@@ -321,14 +321,14 @@ class Operator:
                     
                 elif self.n_tasks == 0 or ( only_pending and 
                         sum(1 for task in self.tasks.values() if task['status'] in ['pending', 'running']) == 0 ):
-                    logger.divider.write("No tasks in the queue.\n")
+                    logger.divider.write("No tasks in the queue.")
                 else:
                     for task_id, task_info in self.tasks.items():
                         if only_pending and task_info['status'] not in ['pending', 'running']:
                             continue
-                        logger.divider.write(f"{task_id:>5} | ---[ {task_info['status']} ]---\n"
-                                            f"      | {task_info['cmd']}\n"
-                                            f"      | {task_info['wd']}\n")
+                        logger.divider._write(f"{task_id:>5} | ---[ {task_info['status']} ]---\n"
+                                              f"      | {task_info['cmd']}\n"
+                                              f"      | {task_info['wd']}\n")
             else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
         except Exception as e:
             logger.logger.error(f"Unexpected error when listing tasks: {e}")
@@ -429,9 +429,9 @@ class Operator:
                         "status": "pending"
                     }):
                     if self.save():
-                        logger.divider.write(f"Appended task {self.n_tasks}:\n"
-                                            f"    Command: {command}\n"
-                                            f"    Work Directory: {work_dir}\n")
+                        logger.divider._write(f"Appended task {self.n_tasks}:\n"
+                                              f"    Command: {command}\n"
+                                              f"    Work Directory: {work_dir}\n")
                     else: logger.logger.error("Error saving tasks after appending.")
                 else: logger.logger.error("Error appending task. Exiting.")
             else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
@@ -458,9 +458,9 @@ class Operator:
                         "status": "pending"
                     }):
                     if self.save():
-                        logger.divider.write(f"Inserted task at position {pos}:\n"
-                                            f"    Command: {command}\n"
-                                            f"    Work Directory: {work_dir}\n")
+                        logger.divider._write(f"Inserted task at position {pos}:\n"
+                                              f"    Command: {command}\n"
+                                              f"    Work Directory: {work_dir}\n")
                     else: logger.logger.error("Error saving tasks after inserting.")
                 else: logger.logger.error("Error inserting task. Exiting.")
             else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
@@ -488,10 +488,10 @@ class Operator:
                         removed_task = self.remove_task(pos)
                         if removed_task:
                             if self.save():
-                                logger.divider.write(f"Removed task at position {pos}:\n"
-                                                    f"    Command: {removed_task['cmd']}\n"
-                                                    f"    Work Directory: {removed_task['wd']}\n"
-                                                    f"    Status: {removed_task['status']}\n")
+                                logger.divider._write(f"Removed task at position {pos}:\n"
+                                                      f"    Command: {removed_task['cmd']}\n"
+                                                      f"    Work Directory: {removed_task['wd']}\n"
+                                                      f"    Status: {removed_task['status']}\n")
                             else: logger.logger.error("Error saving tasks after removing.")
                         else: logger.logger.error("Error removing task. Exiting.")
                     else:logger.logger.info(f"Canceled removing task at position {pos}.")
@@ -522,9 +522,9 @@ class Operator:
                 elif self.insert_task(target_pos + 1 if pos < target_pos else target_pos, self.tasks[str(pos)]) and (
                         self.remove_task(pos if pos < target_pos else pos + 1) ):
                     if self.save():
-                        logger.divider.write(f"Moved task from position {pos} to {target_pos}:\n"
-                                            f"    Command: {self.tasks[str(target_pos)]['cmd']}\n"
-                                            f"    Work Directory: {self.tasks[str(target_pos)]['wd']}\n")
+                        logger.divider._write(f"Moved task from position {pos} to {target_pos}:\n"
+                                              f"    Command: {self.tasks[str(target_pos)]['cmd']}\n"
+                                              f"    Work Directory: {self.tasks[str(target_pos)]['wd']}\n")
                     else: logger.logger.error("Error saving tasks after moving.")
                 else: logger.logger.error("Error moving task. Exiting.")
             else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
@@ -547,9 +547,9 @@ class Operator:
                 elif self.check_position(pos, self.n_tasks): 
                     self.tasks[str(pos)]["status"] = "pending"
                     if self.save():
-                        logger.divider.write(f"Rerun task at position {pos}:\n"
-                                            f"    Command: {self.tasks[str(pos)]['cmd']}\n"
-                                            f"    Work Directory: {self.tasks[str(pos)]['wd']}\n")
+                        logger.divider._write(f"Rerun task at position {pos}:\n"
+                                              f"    Command: {self.tasks[str(pos)]['cmd']}\n"
+                                              f"    Work Directory: {self.tasks[str(pos)]['wd']}\n")
                     else: logger.logger.error("Error saving tasks after rerun.")
                 # else: logger.logger.error(f"Invalid position {pos} for rerun.")
             else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
@@ -574,9 +574,9 @@ class Operator:
                 else:
                     self.tasks[str(pos1)], self.tasks[str(pos2)] = self.tasks[str(pos2)], self.tasks[str(pos1)]
                     if self.save():
-                        logger.divider.write(f"Swapped tasks at positions {pos1} and {pos2}, now:\n"
-                                            f"{pos1:>5}: {self.tasks[str(pos1)]['cmd']}\n"
-                                            f"{pos2:>5}: {self.tasks[str(pos2)]['cmd']}\n")
+                        logger.divider._write(f"Swapped tasks at positions {pos1} and {pos2}, now:\n"
+                                              f"{pos1:>5}: {self.tasks[str(pos1)]['cmd']}\n"
+                                              f"{pos2:>5}: {self.tasks[str(pos2)]['cmd']}\n")
                     else: logger.logger.error("Error saving tasks after swap.")
             else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
         except Exception as e:
@@ -605,8 +605,9 @@ class Operator:
                     if not tasks_to_remove:
                         logger.logger.info("No tasks with specific status found.")
                     else:
-                        confirm = confirm_input(f"{len(tasks_to_remove)} tasks, at {', '.join(tasks_to_remove)} will be removed. \n"
-                                                "Are you sure you want to remove them? (y/n): ").strip().lower()
+                        print(f"{len(tasks_to_remove)} tasks:")
+                        for task_id in tasks_to_remove: print(f"  `{self.tasks[task_id]['cmd']}`")
+                        confirm = confirm_input("will be removed. Are you sure you want to remove them? (y/n): ").strip().lower()
                         if confirm == 'y':
                             cleared = []
                             for task_id in reversed(tasks_to_remove):
@@ -614,8 +615,8 @@ class Operator:
                                     cleared.append(task_id)
                                 else: logger.logger.error(f"Error removing task {task_id}.")
                             if self.save():
-                                logger.divider.write(f"Cleared {len(cleared)} tasks:\n" 
-                                                    f"{', '.join(reversed(cleared))}.\n")
+                                logger.divider.write(f"Cleared {len(cleared)} tasks: " 
+                                                     f"{', '.join(reversed(cleared))}.")
                             else: logger.logger.error("Error saving tasks after clearing.")
                         else: logger.logger.info(f"Canceled clearing tasks with specific status.")
             else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
@@ -643,7 +644,8 @@ class Operator:
                                     for i in range(1, self.n_tasks + 1)}
                         self.tasks = new_tasks
                         if self.save():
-                            logger.divider.write(f"Fixed task keys. Now they are ordered: {', '.join(self.tasks.keys())}.\n")
+                            logger.divider.write(f"Fixed task keys. Now they are ordered: "
+                                                 f"{', '.join(self.tasks.keys())}.")
                         else: logger.logger.error("Error saving tasks after fixing.")
                     else: logger.logger.error("Failed to fix task keys. Number of task IDs and tasks not match.")
             else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
@@ -661,7 +663,7 @@ def main(args):
     elif args.mode == "ls":
         operator.list(only_pending=True)
     
-    elif args.mode == "lsall":
+    elif args.mode == "la":
         operator.list(only_pending=False)
     
     elif args.mode == "add":
@@ -711,7 +713,7 @@ def main(args):
         print("Available modes:")
         print("  run       - Run all pending tasks")
         print("  ls        - List all pending tasks")
-        print("  lsall     - List all tasks")
+        print("  la        - List all tasks")
         print("  add       - Add a new task")
         print("  in        - Insert a task at a specific position")
         print("  rm        - Remove a task at a specific position")

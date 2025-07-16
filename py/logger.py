@@ -3,34 +3,69 @@ import sys
 import textwrap
 from typing import Tuple
 
+def format_message(message: str, width=80,
+                   indent_width=2, first_line_width: int=None) -> str:
+    """ 
+    message: Should NOT have any 'Enter'. 
+    The return do NOT include an 'Enter' at the end.
+    """
+    message, first_line_width = str(message).replace("\n", ""), first_line_width or width
+    if len(message) <= first_line_width: 
+        return message
+    
+    if message[first_line_width] != ' ':
+        # Find the last space before the first line width to avoid breaking words
+        last_space = message.rfind(' ', 0, first_line_width)
+        if last_space != -1:
+            first_line_width = last_space + 1
+    
+    first_line = message[:first_line_width]
+    remaining = message[first_line_width:]
+    
+    result, indent = first_line, " " * indent_width
+    for line in textwrap.wrap(remaining, width = width-len(indent)):
+        result += '\n' + indent + line
+    return result
 
 class LogDivider:
     def __init__(self, log_file: str, width=80):
         self.log_file = log_file
         self.width = width
-
-    def write(self, message: str):
+    
+    def _write(self, message: str):
         with open(self.log_file, "a") as f:
             f.write(message)
         print(message, end="")
+
+    def write(self, message: str, end="\n"):
+        """
+        Write a message to the log file and print it to the console. \\
+        The message will be formatted to fit within the specified width.
+        
+        :param message: should **NOT** have any 'Enter'.
+        """
+        with open(self.log_file, "a") as f:
+            message = format_message(message, self.width, indent_width=2)
+            f.write(message + end)
+        print(message, end=end)
 
     def blank(self):
         """
         Single line - A blank line.
         """
-        self.write("\n")
+        self._write("\n")
 
     def _line(self, char: str):
         """
         Single line - A line filled with `char` characters.
         """
-        self.write(char[0] * self.width + "\n")
+        self._write(char[0] * self.width + "\n")
 
     def _word_line(self, word: str, char: str) -> str:
         """
         Single line - Centralize the word and fill the line with `char` characters.
         """
-        self.write(f" {word} ".center(self.width, char[0]) + "\n")
+        self._write(f" {word} ".center(self.width, char[0]) + "\n")
 
     def line(self):
         self._line("-")
@@ -67,33 +102,11 @@ class WrappingFormatter(logging.Formatter):
         if first_line_width <= 0 or continuation_width <= 0:
             return formatted  # Not enough space for wrapping
         
-        # First, try to fit as much as possible on the first line
-        if len(message) <= first_line_width:
-            return formatted  # No wrapping needed
-        
-        if message[first_line_width] != ' ':
-            # Find the last space before the first line width to avoid breaking words
-            last_space = message.rfind(' ', 0, first_line_width)
-            if last_space == -1:
-                last_space = first_line_width
-            first_line_width = last_space + 1
-        
-        # Split the message: first line gets first_line_width, rest gets continuation_width
-        first_line = message[:first_line_width]
-        remaining = message[first_line_width:]
-        
-        # Wrap the remaining text for continuation lines
-        wrapped_lines = textwrap.wrap(remaining, width=continuation_width)
-        
-        # Create the final formatted output
-        result = prefix_with_separator + first_line
-        
-        # Add continuation lines with fixed indentation
-        indent = ' ' * self.start_from
-        for line in wrapped_lines:
-            result += '\n' + indent + line
-            
-        return result
+        return prefix_with_separator + format_message(
+            message, width=self.width, 
+            indent_width=self.start_from, 
+            first_line_width=first_line_width
+        )
 
 def get_logger(name: str, datefmt="%m-%d,%H:%M:%S", level=logging.INFO, 
                width=80, start_from=30) -> Tuple[logging.Logger, LogDivider]:
@@ -132,6 +145,9 @@ def get_logger(name: str, datefmt="%m-%d,%H:%M:%S", level=logging.INFO,
     return logger, log_divider
 
 class Logger:
+    """
+    MAKE SURE the logger message does **NOT** have any **'Enter'** characters.
+    """
     def __init__(self, name: str, datefmt="%m-%d,%H:%M:%S", level=logging.INFO, 
                        width=80, start_from=30):
         assert level in [
