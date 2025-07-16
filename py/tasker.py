@@ -1,5 +1,10 @@
 """
 python tasker.py <tasker_id> <mode>
+
+You should NOT manually change the files under ~/opt/.tasker/ directory:
+* Do NOT manually MODIFY the tasker file 'tasker.<id>.json'
+* Do NOT manually REMOVE the run file '.tasker.<id>.run'
+* Do NOT manually REMOVE the lock file '.tasker.<id>.lock'
 """
 import argparse
 import functools
@@ -131,9 +136,9 @@ class Task:
         self.save(require="pending")
         try:
             if log_level == "DEBUG":
-                result = subprocess.run(self.command, shell=True, cwd=self.work_dir, capture_output=True, text=True)
+                result = subprocess.run(self.command.split(), cwd=self.work_dir, capture_output=True, text=True)
             else:
-                result = subprocess.run(self.command, shell=True, cwd=self.work_dir)
+                result = subprocess.run(self.command.split(), cwd=self.work_dir)
             if result.stdout: logger.logger.debug(f"Task `{self.command}` stdout: {result.stdout}")
             if result.stderr: logger.logger.debug(f"Task `{self.command}` stderr: {result.stderr}")
             if result.returncode == 0:
