@@ -192,6 +192,9 @@ class Tasker:
         """
         count = 0
         while True:
+            if pause_file.exists():
+                break  # Exit if pause
+            
             status = self.load_1st_pending_task()
             
             if status == "failure" or status is None:  # Error occurred
@@ -232,13 +235,14 @@ class Operator:
         files_dir = Path.home() / "opt" / ".tasker"
         files_dir.mkdir(parents=True, exist_ok=True)
 
-        global tasker_id, logger, tasker_file, lock_file, run_file
+        global tasker_id, logger, tasker_file, lock_file, run_file, pause_file
         tasker_id = _tasker_id
         logger = Logger(name=str(files_dir / f"tasker_{tasker_id}"), 
                         level=log_level, width=80, start_from=9)
         tasker_file = files_dir / f"tasker.{tasker_id}.json"
         lock_file = files_dir / f".tasker.{tasker_id}.lock"
         run_file = files_dir / f".tasker.{tasker_id}.run"
+        pause_file = files_dir / f".tasker.{tasker_id}.pause"
 
         self.tasker = Tasker()
         self.tasks: dict = None
@@ -264,7 +268,10 @@ class Operator:
                     
                     if n_runs == 0:
                         if not flag:  # First time no tasks to run
-                            logger.logger.info("All tasks done. Waiting for new tasks...")
+                            if pause_file.exists():
+                                logger.logger.info("Tasker paused. Waiting for resume...")
+                            else:
+                                logger.logger.info("All tasks done. Waiting for new tasks...")
                             start_wait = time.time()
                             flag = True
                         else:
@@ -294,6 +301,42 @@ class Operator:
             return False
         self.n_tasks = len(self.tasks)
         return True
+    
+    @synchronized()
+    def pause(self):
+        """ Pause the tasker. """
+        logger.logger.info("[USER OPERATION] Pause tasker")
+        logger.divider.word_line("pause")
+        try:
+            if not pause_file.exists():
+                pause_file.touch(exist_ok=False)
+                if self._load_tasks():
+                    for task_id, task_info in self.tasks.items():
+                        pause_task = None
+                        if task_info['status'] == 'running':
+                            pause_task = [task_id, task_info['cmd']]
+                            break
+                    if pause_task:
+                        logger.divider._write(f"Tasker will be paused after running task {pause_task[0]}:\n"
+                                              f"  `{pause_task[1]}`\n"
+                                              f"You can resume it with `tasker.py {tasker_id} resume` later.\n")
+                    else: logger.logger.info("Tasker paused with no running tasks.")
+                else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+            else: logger.logger.info("Tasker is already paused.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when pausing tasker: {e}")
+        finally:
+            logger.divider.word_line("pause")
+    
+    def resume(self):
+        """ Resume the tasker. """
+        try:
+            if pause_file.exists():
+                pause_file.unlink()
+                logger.logger.info("Tasker resumed.")
+            else: logger.logger.info("Tasker is not paused.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when resuming tasker: {e}")
     
     def check_valid_tasks(self) -> bool:
         """ Check if all task keys are ordered. Run after loading tasks. """
@@ -660,6 +703,12 @@ def main(args):
     if args.mode == "run":
         operator.run()
     
+    elif args.mode == "pause":
+        operator.pause()
+    
+    elif args.mode == "resume":
+        operator.resume()
+    
     elif args.mode == "ls":
         operator.list(only_pending=True)
     
@@ -712,6 +761,8 @@ def main(args):
     elif args.mode == "help":
         print("Available modes:")
         print("  run       - Run all pending tasks")
+        print("  pause     - Pause the tasker")
+        print("  resume    - Resume the tasker")
         print("  ls        - List all pending tasks")
         print("  la        - List all tasks")
         print("  add       - Add a new task")
