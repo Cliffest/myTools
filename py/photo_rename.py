@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """
 Rename photos/videos to "YYYY-MM-DD HHMMSS.ext" based on capture time.
 
-- Images (JPG/HEIC): EXIF DateTimeOriginal -> local time (naive)
-- Videos (MOV/MP4): QuickTime/MP4 creation_time (UTC) -> converted to local
+- Images (JPG/HEIC): EXIF DateTimeOriginal -> specify timezone with --taken-UTC
+- Videos (MOV/MP4): QuickTime/MP4 creation_time (UTC) -> converted to target UTC offset
 - Optional fallback: file mtime
 - If a name collides, increment by +1 second until unique
 
@@ -27,8 +26,8 @@ except ImportError:  # allow running --videos-only without exifread
     exifread = None  # noqa: N816
 
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".heic"}
-VIDEO_EXTS = {".mov", ".mp4"}
+IMAGE_EXTS = {".JPG", ".JPEG", ".HEIC"}
+VIDEO_EXTS = {".MOV", ".MP4"}
 
 NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{6}\.[A-Za-z0-9]+$")
 
@@ -38,7 +37,7 @@ def iter_files(root: Path, recursive: bool) -> Iterable[Path]:
     for p in globber("*"):
         if not p.is_file():
             continue
-        ext = p.suffix.lower()
+        ext = p.suffix.upper()
         if ext in IMAGE_EXTS | VIDEO_EXTS:
             yield p
 
@@ -66,7 +65,7 @@ def get_image_time_exif(path: Path) -> Optional[datetime]:
                 s = tags[key].printable
                 dt = parse_exif_datetime_string(s)
                 if dt:
-                    return dt  # EXIF is usually local wall time (naive)
+                    return dt  # EXIF is naive datetime (no timezone info)
     except Exception:
         pass
     return None
@@ -75,8 +74,7 @@ def get_image_time_exif(path: Path) -> Optional[datetime]:
 def run_ffprobe(path: Path) -> list[str]:
     # Query both container- and stream-level tags + Apple QuickTime tag
     cmd = [
-        "ffprobe", "-v", #"error",
-        "quiet", "-hide_banner",  # Silence harmless QuickTime warning
+        "ffprobe", "-v", "quiet", "-hide_banner",  # Silence harmless QuickTime warning
         "-show_entries",
         "format_tags=creation_time:stream_tags=creation_time:format_tags=com.apple.quicktime.creationdate",
         "-of", "default=nw=1:nk=1",
@@ -138,29 +136,42 @@ def get_video_time_ffprobe(path: Path) -> Optional[datetime]:
     return None
 
 
-def get_capture_time(path: Path, *, prefer_mtime: bool = False) -> Tuple[Optional[datetime], str]:
+def get_capture_time(path: Path, *, prefer_mtime: bool = False, taken_utc_offset: int = 0, target_utc_offset: int = 0) -> Tuple[Optional[datetime], str]:
     """
     Returns (datetime, source)
-    - For images: EXIF local naive
-    - For videos: creation_time (UTC -> convert to local later)
-    - If prefer_mtime: use file mtime if metadata missing
+    - For images: EXIF naive datetime -> interpret as taken_utc_offset timezone -> convert to target_utc_offset
+    - For videos: creation_time (UTC) -> convert to target_utc_offset
+    - If prefer_mtime: use file mtime (local) -> convert to target_utc_offset
     """
-    ext = path.suffix.lower()
+    ext = path.suffix.upper()
+    taken_tz = timezone(timedelta(hours=taken_utc_offset))
+    target_tz = timezone(timedelta(hours=target_utc_offset))
+    
     # 1) primary metadata
     if ext in IMAGE_EXTS:
         dt = get_image_time_exif(path)
         if dt:
-            return dt, "exif"
+            # EXIF datetime is naive - interpret it as being in the taken_utc_offset timezone
+            dt_aware = dt.replace(tzinfo=taken_tz)
+            return dt_aware.astimezone(target_tz), "exif"
     elif ext in VIDEO_EXTS:
         dt = get_video_time_ffprobe(path)
         if dt:
-            return dt, "ffprobe"
+            # Video datetime is typically UTC, convert to target UTC offset
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(target_tz), "ffprobe"
 
     # 2) fallback: mtime
     if prefer_mtime:
         try:
             ts = path.stat().st_mtime
-            return datetime.fromtimestamp(ts), "mtime"
+            # mtime is in local timezone, convert to target UTC offset
+            local_dt = datetime.fromtimestamp(ts)
+            # Get system local timezone
+            local_tz = datetime.now().astimezone().tzinfo
+            local_dt_aware = local_dt.replace(tzinfo=local_tz)
+            return local_dt_aware.astimezone(target_tz), "mtime"
         except Exception:
             pass
 
@@ -170,7 +181,9 @@ def get_capture_time(path: Path, *, prefer_mtime: bool = False) -> Tuple[Optiona
 # ---------- Renaming ----------
 
 def fmt_target_name(dt: datetime, ext: str) -> str:
-    return dt.strftime("%Y-%m-%d %H%M%S") + ext.lower()
+    # Strip timezone info for filename (we want just the clock time in target timezone)
+    dt_naive = dt.replace(tzinfo=None)
+    return dt_naive.strftime("%Y-%m-%d %H%M%S") + ext.upper()
 
 
 def is_already_named(p: Path) -> bool:
@@ -186,22 +199,25 @@ def resolve_collision(dst_dir: Path, base_dt: datetime, ext: str) -> Tuple[datet
         dt = dt + timedelta(seconds=1)
 
 
-def rename_one(p: Path, *, use_mtime_fallback: bool, to_local_tz: bool) -> Tuple[bool, str, Optional[Path]]:
-    dt, src = get_capture_time(p, prefer_mtime=use_mtime_fallback)
+def rename_one(p: Path, *, use_mtime_fallback: bool, taken_utc_offset: int, target_utc_offset: int) -> Tuple[bool, str, Optional[Path]]:
+    dt, src = get_capture_time(p, prefer_mtime=use_mtime_fallback, taken_utc_offset=taken_utc_offset, target_utc_offset=target_utc_offset)
     if dt is None:
         return False, f"[SKIP] No datetime for {p}", None
 
-    # If dt is timezone-aware (videos often UTC), convert to local wall time for naming
-    if dt.tzinfo is not None:
-        if to_local_tz:
-            dt = dt.astimezone().replace(tzinfo=None)
-        else:
-            # strip tz to keep UTC clock time as-is (rarely desired)
-            dt = dt.replace(tzinfo=None)
-
     dst_dir = p.parent
     dt, dst_path = resolve_collision(dst_dir, dt, p.suffix)
-    return True, f"[OK]  {p.name} ({src}) -> {dst_path.name}", dst_path
+    
+    # Format UTC offsets for display
+    ext = p.suffix.upper()
+    if ext in IMAGE_EXTS:
+        taken_str = f"UTC{taken_utc_offset:+d}" if taken_utc_offset != 0 else "UTC"
+        target_str = f"UTC{target_utc_offset:+d}" if target_utc_offset != 0 else "UTC"
+        conversion_info = f"{src}@{taken_str}->{target_str}"
+    else:
+        target_str = f"UTC{target_utc_offset:+d}" if target_utc_offset != 0 else "UTC"
+        conversion_info = f"{src}->{target_str}"
+    
+    return True, f"[OK]  {p.name} ({conversion_info}) -> {dst_path.name}", dst_path
 
 
 # ---------- CLI ----------
@@ -216,24 +232,38 @@ def main():
     ap.add_argument("--images-only", action="store_true", help="Process only images (JPG/HEIC)")
     ap.add_argument("--skip-already-named", action="store_true", help="Skip files already in target name pattern")
     ap.add_argument("--keep-tree", action="store_true", help="Keep files in place (default).")
-    ap.add_argument("--to-local-tz", action="store_true",
-                    help="Convert timezone-aware video timestamps (usually UTC) to local time before naming")
+    ap.add_argument("--taken-UTC", type=int, default=8, metavar="OFFSET",
+                    help="UTC offset for EXIF photo timestamps (e.g., --taken-UTC 8 if photos taken in UTC+8). Default: 8 (UTC)")
+    ap.add_argument("--target-UTC", type=int, default=8, metavar="OFFSET", 
+                    help="Target UTC offset for output filenames (e.g., --target-UTC 8 for UTC+8 times). Default: 8 (UTC)")
     args = ap.parse_args()
 
     root = args.directory.expanduser().resolve()
     if not root.exists():
-        print(f"[ERR] Directory not found: {root}")
+        print(f"[ERROR] Directory not found: {root}")
         raise SystemExit(2)
+
+    # Validate UTC offsets
+    for offset, name in [(args.taken_UTC, "taken-UTC"), (args.target_UTC, "target-UTC")]:
+        if not -12 <= offset <= 14:
+            print(f"[ERROR] {name} offset must be between -12 and +14, got: {offset}")
+            raise SystemExit(2)
 
     files = list(iter_files(root, args.recursive))
     if args.videos_only:
-        files = [p for p in files if p.suffix.lower() in VIDEO_EXTS]
+        files = [p for p in files if p.suffix.upper() in VIDEO_EXTS]
     if args.images_only:
-        files = [p for p in files if p.suffix.lower() in IMAGE_EXTS]
+        files = [p for p in files if p.suffix.upper() in IMAGE_EXTS]
 
     if not files:
         print("[INFO] No media files found.")
         return
+
+    taken_str = f"UTC{args.taken_UTC:+d}" if args.taken_UTC != 0 else "UTC"
+    target_str = f"UTC{args.target_UTC:+d}" if args.target_UTC != 0 else "UTC"
+    print(f"[INFO] Processing {len(files)} files")
+    print(f"[INFO] Photo EXIF timezone: {taken_str}")
+    print(f"[INFO] Target output timezone: {target_str}")
 
     renamed = 0
     skipped = 0
@@ -248,7 +278,8 @@ def main():
         ok, msg, dst = rename_one(
             p,
             use_mtime_fallback=args.use_mtime_fallback,
-            to_local_tz=args.to_local_tz,
+            taken_utc_offset=args.taken_UTC,
+            target_utc_offset=args.target_UTC,
         )
         print(msg)
         if not ok:
@@ -263,7 +294,7 @@ def main():
             p.rename(dst)  # in-place rename
             renamed += 1
         except Exception as e:
-            print(f"[ERR] Rename failed for {p}: {e}")
+            print(f"[ERROR] Rename failed for {p}: {e}")
             failed += 1
 
     print(f"\nSummary: renamed={renamed}, skipped={skipped}, failed={failed}")
