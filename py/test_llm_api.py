@@ -24,11 +24,12 @@ def main(args):
                Path.home() / "my" / "_env" / "test.env")
     
     try:
-        api_key = load_api_key(key_name, env_file)
+        api_key = load_api_key(key_name)
+        if not api_key: api_key = load_api_key(key_name, env_file)
         if not api_key:
             print(f"API key '{key_name}' does not exist. Please set it by \n"
                   f"  1. Run `export {key_name}=..` in terminal \n"
-                  f"  2. Create a .env file with `{key_name}=..`")
+                  f"  2. Create a '{env_file}' file with `{key_name}=..`")
             return 1
     except Exception as e:
         print(f"Error getting API key - {e}")
