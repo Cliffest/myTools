@@ -23,16 +23,20 @@ def load_config(config_env):
     port = int(os.getenv('SMTP_PORT') or 465)
     sender_email = os.getenv('SENDER_EMAIL')
     password = os.getenv('SENDER_PASSWORD')
-    receiver_email = os.getenv('RECEIVER_EMAIL')
+    receiver_emails_str = os.getenv('RECEIVER_EMAILS') or os.getenv('RECEIVER_EMAIL')
+    if receiver_emails_str:
+        receiver_emails = [email.strip() for email in receiver_emails_str.split(',')]
+    else:
+        receiver_emails = []
     
     # Varify required configurations
-    if not all([smtp_server, sender_email, password, receiver_email]):
+    if not all([smtp_server, sender_email, password]) or not receiver_emails:
         raise ValueError("Missing required email configuration in environment variables")
     
-    return device, smtp_server, port, sender_email, password, receiver_email
+    return device, smtp_server, port, sender_email, password, receiver_emails
 
 def send_email(subject, content, config_env=None, content_type="plain"):
-    device, smtp_server, port, sender_email, password, receiver_email = load_config(config_env)
+    device, smtp_server, port, sender_email, password, receiver_emails = load_config(config_env)
 
     # Set the email header
     full_subject = f"[{device}]" + " " + subject
@@ -51,7 +55,8 @@ def send_email(subject, content, config_env=None, content_type="plain"):
     
     msg['Subject'] = full_subject
     msg['From'] = sender_email
-    msg['To'] = receiver_email
+    # Display the first recipient, actually sent to all
+    msg['To'] = receiver_emails[0] if receiver_emails else ""
 
     # For testing: write email to local file instead of sending
     # with open("tmp.html", "w", encoding="utf-8") as f:
@@ -67,7 +72,7 @@ def send_email(subject, content, config_env=None, content_type="plain"):
             server.starttls()  # Enable TLS for non-SSL ports
         
         server.login(sender_email, password)
-        server.sendmail(sender_email, [receiver_email], msg.as_string())
+        server.sendmail(sender_email, receiver_emails, msg.as_string())
         server.quit()
     
     except smtplib.SMTPAuthenticationError:
