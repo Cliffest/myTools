@@ -754,7 +754,7 @@ def get_table_content(tasks: dict) -> str:
     """
     
     for task_id, task_info in tasks.items():
-        if not all (k in ["status", "cmd", "wd"] for k in task_info.keys()):
+        if not all (k in task_info.keys() for k in ["status", "cmd", "wd"]):
             raise ValueError("Each item in JSON must contain 'status', 'cmd', and 'wd' keys")
         if not task_info['status'] in ["completed", "failed"]:
             if task_info['status'] in ["running", "pending"]:
