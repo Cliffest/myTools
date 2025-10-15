@@ -1,7 +1,7 @@
 """
 python tasker.py <tasker_id> <mode>
 
-You should NOT manually change the files under ~/opt/.tasker/ directory:
+You should NOT manually change the files under ~/my/.tasker/ directory:
 * Do NOT manually MODIFY the tasker file 'tasker.<id>.json'
 * Do NOT manually REMOVE the run file '.tasker.<id>.run'
 * Do NOT manually REMOVE the lock file '.tasker.<id>.lock'
@@ -20,8 +20,16 @@ try:
 except ImportError:
     from .logger import Logger
 
-log_level = "INFO"
+LOG_LEVEL = "INFO"
 CWD_PATH = Path.cwd()
+SEND_EMAIL = True
+EMAIL_CONFIG = "~/my/_env/email.env"
+
+if SEND_EMAIL:  # Require: `pip install python-dotenv`
+    try:
+        from auto_email import send_email
+    except ImportError:
+        from .auto_email import send_email
 
 def lock() -> bool:
     if lock_file.exists():
@@ -135,7 +143,7 @@ class Task:
         logger.logger.info(f"Running task {self.task_id}: `{self.command}` in '{self.work_dir}'")
         self.save(require="pending")
         try:
-            if log_level == "DEBUG":
+            if LOG_LEVEL == "DEBUG":
                 result = subprocess.run(self.command.split(), cwd=self.work_dir, capture_output=True, text=True)
             else:
                 result = subprocess.run(self.command.split(), cwd=self.work_dir)
@@ -144,16 +152,28 @@ class Task:
             if result.returncode == 0:
                 self.status = "completed"
             else:
-                self.status = "failed"
+                self.status, error = "failed", "Non-zero exit code"
         except Exception as e:
-            self.status = "failed"
+            self.status, error = "failed", e
             logger.logger.error(f"Error running task `{self.command}`: {e}")
         except KeyboardInterrupt:
-            self.status = "failed"
+            self.status, error = "failed", "Keyboard interrupt"
             logger.logger.info(f"Task `{self.command}` interrupted by user.")
         finally:
             self.save(require="running")  # Save the task status after running
             logger.logger.info(f"Task `{self.command}` finished with status: {self.status}")
+            
+            if self.status == "failed" and SEND_EMAIL:
+                try:
+                    send_email("Task failed", f"""
+                        <p><strong>Command:</strong> <code>{self.command}</code><br>
+                        <strong>Work Directory:</strong> {self.work_dir}</p>
+                        <p>Task end with status <span class="error">failed</span>:</p>
+                        <div class="note">{error}</div>
+                    """, config_env=EMAIL_CONFIG, content_type="html")
+                    logger.logger.info(f"Sent email notification for failed task.")
+                except Exception as e:
+                    logger.logger.error(f"Failed to send email notification for failed task: {e}")
 
 class Tasker:
     def __init__(self):
@@ -232,13 +252,13 @@ def confirm_input(prompt: str) -> str:
 
 class Operator:
     def __init__(self, _tasker_id: str):
-        files_dir = Path.home() / "opt" / ".tasker"
+        files_dir = Path.home() / "my" / ".tasker"
         files_dir.mkdir(parents=True, exist_ok=True)
 
         global tasker_id, logger, tasker_file, lock_file, run_file, pause_file
         tasker_id = _tasker_id
         logger = Logger(name=str(files_dir / f"tasker_{tasker_id}"), 
-                        level=log_level, width=80, start_from=9)
+                        level=LOG_LEVEL, width=80, start_from=9)
         tasker_file = files_dir / f"tasker.{tasker_id}.json"
         lock_file = files_dir / f".tasker.{tasker_id}.lock"
         run_file = files_dir / f".tasker.{tasker_id}.run"
@@ -272,6 +292,10 @@ class Operator:
                                 logger.logger.info("Tasker paused. Waiting for resume...")
                             else:
                                 logger.logger.info("All tasks done. Waiting for new tasks...")
+                                if SEND_EMAIL:
+                                    if self.auto_lsall_email():
+                                        logger.logger.info("Sent email notification for all tasks done.")
+                                    else: logger.logger.error("Failed to send email notification.")
                             start_wait = time.time()
                             flag = True
                         else:
@@ -294,6 +318,22 @@ class Operator:
             if run_file.exists(): run_file.unlink()  # Remove run file when done
             else: logger.logger.warning("Run file not found after the run done.")
     
+    @synchronized()
+    def auto_lsall_email(self) -> bool:
+        try:
+            if self._load_tasks():
+                send_email("All tasks done", f"""
+                    Tasker {tasker_id} has completed all tasks.
+                    {get_table_content(self.tasks)}
+                """, config_env=EMAIL_CONFIG, content_type="html")
+                return True
+            else: 
+                logger.logger.error("Failed to load tasks. Please check the tasker file.")
+                return False
+        except Exception as e:
+            logger.logger.error(f"Error sending e-mail: {e}")
+            return False
+
     def _load_tasks(self) -> bool:
         """ **Should be wrapped with lock** """
         self.tasks = load_tasks()
@@ -696,6 +736,47 @@ class Operator:
             logger.logger.error(f"Unexpected error when fixing task keys: {e}")
         finally:
             logger.divider.word_line("fix")
+
+def get_table_content(tasks: dict) -> str:
+    td_class = {"completed": "success", "failed": "error", "running": "warning", "pending": "warning"}
+    table_content = """
+        <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Status</th>
+                    <th>Command</th>
+                    <th>Work Directory</th>
+                </tr>
+            </thead>
+            <tbody>
+    """
+    
+    for task_id, task_info in tasks.items():
+        if not all (k in ["status", "cmd", "wd"] for k in task_info.keys()):
+            raise ValueError("Each item in JSON must contain 'status', 'cmd', and 'wd' keys")
+        if not task_info['status'] in ["completed", "failed"]:
+            if task_info['status'] in ["running", "pending"]:
+                raise Warning("Status NOT 'completed' or 'failed'")
+            raise ValueError(f"Invalid status: {task_info['status']}")
+        
+        table_content += f"""
+                <tr>
+                    <td class="id-cell">{task_id}</td>
+                    <td class="status-cell"><span class="{td_class[task_info['status']]}">{task_info['status']}</span></td>
+                    <td class="command-cell"><code>{task_info['cmd']}</code></td>
+                    <td class="directory-cell">{task_info['wd']}</td>
+                </tr>
+        """
+    
+    table_content += """
+            </tbody>
+        </table>
+        </div>
+    """
+    return table_content
+
 
 def main(args):
     operator = Operator(args.tasker_id)
