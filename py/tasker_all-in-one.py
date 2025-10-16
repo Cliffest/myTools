@@ -1,0 +1,1278 @@
+"""
+python tasker_all-in-one.py <tasker_id> <mode>
+Requirements:
+    pip install python-dotenv
+
+An combined version of auto_email.py, logger.py and tasker.py.
+
+You should NOT manually change the files under ~/my/.tasker/ directory:
+* Do NOT manually MODIFY the tasker file 'tasker.<id>.json'
+* Do NOT manually REMOVE the run file '.tasker.<id>.run'
+* Do NOT manually REMOVE the lock file '.tasker.<id>.lock'
+"""
+# ------ global variables ------ #
+
+from pathlib import Path
+
+LOG_LEVEL = "INFO"
+CWD_PATH = Path.cwd()
+SEND_EMAIL = True
+EMAIL_CONFIG = "~/my/_env/email.env"
+MAX_SUBJECT_LENGTH = 50
+
+# ----------- import ----------- #
+
+# auto_email
+import datetime
+import os
+import smtplib
+from dotenv import load_dotenv
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+# logger
+import logging
+import sys
+import textwrap
+from typing import Tuple
+# tasker
+import argparse
+import functools
+import json
+import shutil
+import subprocess
+import threading
+import time
+from typing import List
+
+# -------------------------- auto_email -------------------------- #
+
+def load_config(config_env):
+    env_path = os.path.expanduser(config_env or "~/my/_env/email.env")
+    if not os.path.exists(env_path):
+        raise FileNotFoundError(f"{env_path} dose not exist")
+    load_dotenv(env_path)
+    
+    # Read email configurations
+    device = os.getenv('DEVICE') or "unknown"
+    smtp_server = os.getenv('SMTP_SERVER') or "smtp.163.com"
+    port = int(os.getenv('SMTP_PORT') or 465)
+    sender_email = os.getenv('SENDER_EMAIL')
+    password = os.getenv('SENDER_PASSWORD')
+    receiver_emails_str = os.getenv('RECEIVER_EMAILS') or os.getenv('RECEIVER_EMAIL')
+    if receiver_emails_str:
+        receiver_emails = [email.strip() for email in receiver_emails_str.split(',')]
+    else:
+        receiver_emails = []
+    
+    # Varify required configurations
+    if not all([smtp_server, sender_email, password]) or not receiver_emails:
+        raise ValueError("Missing required email configuration in environment variables")
+    
+    return device, smtp_server, port, sender_email, password, receiver_emails
+
+def send_email(subject, content, config_env=None, content_type="plain"):
+    device, smtp_server, port, sender_email, password, receiver_emails = load_config(config_env)
+
+    # Set the email header
+    full_subject = f"[{device}]" + " " + subject
+    if len(full_subject) > MAX_SUBJECT_LENGTH:
+        raise ValueError(f"Subject length exceeds {MAX_SUBJECT_LENGTH} characters")
+    
+    if content_type == "html":
+        html_content = get_html_email(full_subject, content, device=device)
+        msg = MIMEMultipart("alternative")
+        msg.attach(MIMEText("Please use an HTML supported email client to view this email.", "plain", "utf-8"))
+        msg.attach(MIMEText(html_content, "html", "utf-8"))
+    elif content_type == "plain":
+        msg = MIMEText(content, "plain", "utf-8")
+    else:
+        raise ValueError("Unsupported content type. Use 'plain' or 'html'.")
+    
+    msg['Subject'] = full_subject
+    msg['From'] = sender_email
+    # Display the first recipient, actually sent to all
+    msg['To'] = receiver_emails[0] if receiver_emails else ""
+
+    # For testing: write email to local file instead of sending
+    # with open("tmp.html", "w", encoding="utf-8") as f:
+    #     if content_type == "html": f.write(html_content)
+    # return
+
+    try:
+        # Select connection type based on port
+        if port == 465:
+            server = smtplib.SMTP_SSL(smtp_server, port)
+        else:
+            server = smtplib.SMTP(smtp_server, port)
+            server.starttls()  # Enable TLS for non-SSL ports
+        
+        server.login(sender_email, password)
+        server.sendmail(sender_email, receiver_emails, msg.as_string())
+        server.quit()
+    
+    except smtplib.SMTPAuthenticationError:
+        raise RuntimeError("Failed to authenticate with the SMTP server. "
+                          f"Please enable SMTP service on {sender_email} and change password into authorization code.")
+    except Exception as e:
+        raise RuntimeError(f"Failed to send email - {str(e)}")
+
+def get_html_email(subject, content, device=None):
+    return f"""
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{subject}</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f5f7fa;
+            margin: 0;
+            padding: 20px;
+        }}
+        .email-container {{
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }}
+        .email-header {{
+            background: #e0dde9;
+            color: #495057;
+            padding: 15px 20px;
+            border-bottom: 1px solid #e9ecef;
+        }}
+        .email-header h1 {{
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+            text-align: left;
+        }}
+        .email-body {{
+            padding: 20px;
+        }}
+        .info-item {{
+            margin: 10px 0;
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }}
+        .info-item:last-child {{
+            border-bottom: none;
+        }}
+        .label {{
+            font-weight: 600;
+            color: #555;
+            display: inline-block;
+            width: 120px;
+        }}
+        .value {{
+            color: #333;
+        }}
+        .error {{
+            color: #e74c3c;
+            font-weight: bold;
+        }}
+        .success {{
+            color: #27ae60;
+            font-weight: bold;
+        }}
+        .warning {{
+            color: #f39c12;
+            font-weight: bold;
+        }}
+        code {{
+            background: #f4f4f4;
+            color: #333;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            border: 1px solid #ddd;
+        }}
+        .note {{
+            background-color: #fff9db;
+            border-left: 4px solid #ffd43b;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 0 4px 4px 0;
+        }}
+        .email-footer {{
+            background: #f8f9fa;
+            padding: 1px 20px;
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+            border-top: 1px solid #e9ecef;
+        }}
+        .timestamp {{
+            color: #999;
+            font-size: 12px;
+            text-align: right;
+            margin-top: 20px;
+        }}
+        .table-container {{
+            max-width: 100%;
+            overflow-x: auto;
+            margin: 15px 0;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 500px;
+        }}
+        th {{
+            background-color: #f0ebe5;
+            font-weight: 600;
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 2px solid #dee2e6;
+        }}
+        td {{
+            padding: 8px 12px;
+            border-bottom: 1px solid #dee2e6;
+            vertical-align: top;
+        }}
+        tr:nth-child(even) {{
+            background-color: #fdfbf7;
+        }}
+        tr:hover {{
+            background-color: #e9ecef;
+        }}
+        .id-cell {{
+            min-width: 50px;
+            max-width: 50px;
+            word-wrap: break-word;
+        }}
+        .status-cell {{
+            min-width: 100px;
+            max-width: 100px;
+            word-wrap: break-word;
+        }}
+        .command-cell {{
+            min-width: 400px;
+            max-width: 400px;
+            word-break: break-all;
+        }}
+        .directory-cell {{
+            min-width: 250px;
+            max-width: 250px;
+            word-break: break-all;
+        }}
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <div class="email-header">
+            <h1>{subject}</h1>
+        </div>
+        <div class="email-body">
+            <div class="content">
+                {content}
+            </div>
+            <div class="timestamp">
+                Send time: {(device+' • ') if device is not None else ''}{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            </div>
+        </div>
+        <div class="email-footer">
+            <p>This email was sent automatically</p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+# ---------------------------- logger ---------------------------- #
+
+def format_message(message: str, width=80,
+                   indent_width=2, first_line_width: int=None) -> str:
+    """ 
+    message: Should NOT have any 'Enter'. 
+    The return do NOT include an 'Enter' at the end.
+    """
+    message, first_line_width = str(message).replace("\n", ""), first_line_width or width
+    if len(message) <= first_line_width: 
+        return message
+    
+    if message[first_line_width] != ' ':
+        # Find the last space before the first line width to avoid breaking words
+        last_space = message.rfind(' ', 0, first_line_width)
+        if last_space != -1:
+            first_line_width = last_space + 1
+    
+    first_line = message[:first_line_width]
+    remaining = message[first_line_width:]
+    
+    result, indent = first_line, " " * indent_width
+    for line in textwrap.wrap(remaining, width = width-len(indent)):
+        result += '\n' + indent + line
+    return result
+
+class LogDivider:
+    def __init__(self, log_file: str, width=80):
+        self.log_file = log_file
+        self.width = width
+    
+    def _write(self, message: str):
+        with open(self.log_file, "a") as f:
+            f.write(message)
+        print(message, end="")
+
+    def write(self, message: str, end="\n"):
+        """
+        Write a message to the log file and print it to the console. \\
+        The message will be formatted to fit within the specified width.
+        
+        :param message: should **NOT** have any 'Enter'.
+        """
+        with open(self.log_file, "a") as f:
+            message = format_message(message, self.width, indent_width=2)
+            f.write(message + end)
+        print(message, end=end)
+
+    def blank(self):
+        """
+        Single line - A blank line.
+        """
+        self._write("\n")
+
+    def _line(self, char: str):
+        """
+        Single line - A line filled with `char` characters.
+        """
+        self._write(char[0] * self.width + "\n")
+
+    def _word_line(self, word: str, char: str) -> str:
+        """
+        Single line - Centralize the word and fill the line with `char` characters.
+        """
+        self._write(f" {word} ".center(self.width, char[0]) + "\n")
+
+    def line(self):
+        self._line("-")
+
+    def dline(self):
+        self._line("=")
+
+    def word_line(self, word: str):
+        self._word_line(word, "-")
+
+class WrappingFormatter(logging.Formatter):
+    def __init__(self, fmt, datefmt=None, width=80, start_from=30):
+        super().__init__(fmt, datefmt)
+        self.width = width
+        self.start_from = start_from
+        
+    def format(self, record):
+        # Get the formatted message using the parent formatter
+        formatted = super().format(record)
+        
+        # Split into prefix (everything before the message) and the actual message
+        parts = formatted.split(' | ', 1)
+        if len(parts) != 2:
+            return formatted  # Fallback if format doesn't match expected pattern
+            
+        prefix, message = parts
+        prefix_with_separator = prefix + ' | '
+        
+        # Calculate available width for the first line (actual prefix length)
+        first_line_width = self.width - len(prefix_with_separator)
+        # Calculate available width for continuation lines (considering start_from indentation)
+        continuation_width = self.width - self.start_from
+        
+        if first_line_width <= 0 or continuation_width <= 0:
+            return formatted  # Not enough space for wrapping
+        
+        return prefix_with_separator + format_message(
+            message, width=self.width, 
+            indent_width=self.start_from, 
+            first_line_width=first_line_width
+        )
+
+def get_logger(name: str, datefmt="%m-%d,%H:%M:%S", level=logging.INFO, 
+               width=80, start_from=30) -> Tuple[logging.Logger, LogDivider]:
+    """
+    Get a logger by a specified name.
+    return: logger & divider (log_divider)
+    """
+    log_divider = LogDivider(name + ".log", width)
+
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.propagate = False
+    
+    for h in list(logger.handlers):  # Clear old handlers
+        logger.removeHandler(h)
+
+    # Create the wrapping formatter
+    formatter = WrappingFormatter(
+        fmt="%(levelname)-8s %(asctime)s.%(msecs)03d | %(message)s",
+        datefmt=datefmt,
+        width=width,
+        start_from=start_from
+    )
+
+    file_handler = logging.FileHandler(log_divider.log_file, mode="a", encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.setFormatter(formatter)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(level)
+    console_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    return logger, log_divider
+
+class Logger:
+    """
+    MAKE SURE the logger message does **NOT** have any **'Enter'** characters.
+    """
+    def __init__(self, name: str, datefmt="%m-%d,%H:%M:%S", level=logging.INFO, 
+                       width=80, start_from=30):
+        assert level in [
+                logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL,
+                "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
+            ], f"Invalid logger level: {level}"
+        self.logger, self.divider = get_logger(name, datefmt, level, width, start_from)
+
+# ---------------------------- tasker ---------------------------- #
+
+def lock() -> bool:
+    if lock_file.exists():
+        logger.logger.debug("Lock file already exists. Another instance may be running.")
+        return False
+    lock_file.touch(exist_ok=False)
+    return True
+
+def check_lock() -> bool:
+    return lock_file.exists()
+
+def unlock():
+    if not lock_file.exists():
+        logger.logger.warning("Failed to unlock - lock file not exists.")
+    else: lock_file.unlink()
+
+def synchronized(level="positive"):
+    """
+    Decorator factory that returns a decorator which
+    level is positive: lock the function while running;
+             negative: wait for the lock to be released before running.
+    """
+    assert level in ["positive", "negative"]
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            while not lock() if level == "positive" else check_lock():
+                time.sleep(1)  # Wait for the lock to be released
+            result = func(*args, **kwargs)
+            if level == "positive": unlock()
+            return result
+        return wrapper
+    return decorator
+
+def load_tasks() -> dict:
+    """ **Should be wrapped with lock**. Return 'failure' on error. """
+    try:
+        with open(tasker_file, 'r') as f:
+            tasks = json.load(f)
+        return tasks
+    except FileNotFoundError:
+        logger.logger.warning(f"Tasks file not found. Creating a new one.")
+        with open(tasker_file, 'w') as f:
+            json.dump({}, f)
+        return {}
+    
+    except Exception as e:
+        logger.logger.error(f"Error loading tasks: {e}")
+        return "failure"
+    except KeyboardInterrupt:
+        logger.logger.info("Keyboard interrupt received while loading tasks.")
+        return "failure"
+    finally: pass
+
+class Task:
+    def __init__(self, task_id: int, work_dir: str, command: str, status: str):
+        self.task_id: int = task_id
+        self.work_dir: str = work_dir
+        self.command: str = command
+        self.status: str = status
+        assert self.status in ["pending", "running", "completed", "failed"], "Invalid status"
+    
+    @synchronized()
+    def save(self, require: str):
+        try:
+            tasks = load_tasks()
+            if not isinstance(tasks, dict) or not require in ["pending", "running"]: 
+                raise ValueError("")
+            found = False
+            for k, v in tasks.items():  # First task whose content is same with the current task
+                if v["cmd"] == self.command and v["wd"] == self.work_dir and v["status"] == require:
+                    tasks[k]["status"], found = self.status, True
+                    break
+            if not found:  # If not found, add a new task
+                task_id: int = len(tasks) + 1
+                while str(task_id) in tasks:  # Find a new task ID
+                    task_id += 1
+                tasks[str(task_id)] = {
+                    "wd": self.work_dir,
+                    "cmd": self.command,
+                    "status": self.status
+                }
+            shutil.copy(str(tasker_file), str(tasker_file) + ".copy")
+            with open(tasker_file, 'w') as f:
+                json.dump(tasks, f, indent=4)
+        
+        except Exception as e:
+            logger.logger.error(f"Error saving task `{self.command}`: {e}. "
+                                "This may cause fatal error. Please check.")
+        except KeyboardInterrupt:
+            logger.logger.error(f"Keyboard interrupt received while saving task `{self.command}`. "
+                                "This may cause fatal error. Please check.")
+        finally: pass
+
+    def run(self):
+        """
+        Run the task command in its work directory.
+        """
+        if not self.status == "pending":
+            logger.logger.warning(f"Task {self.task_id} is not pending: {self.status}")
+            return
+        
+        if not Path(self.work_dir).exists():  # Ensure the work directory exists
+            self.status = "failed"
+            logger.logger.error(f"Task {self.task_id} failed - work directory '{self.work_dir}' does not exist.")
+            self.save(require="pending")
+            return
+        
+        # Run the command
+        self.status = "running"
+        logger.logger.info(f"Running task {self.task_id}: `{self.command}` in '{self.work_dir}'")
+        self.save(require="pending")
+        try:
+            if LOG_LEVEL == "DEBUG":
+                result = subprocess.run(self.command.split(), cwd=self.work_dir, capture_output=True, text=True)
+            else:
+                result = subprocess.run(self.command.split(), cwd=self.work_dir)
+            if result.stdout: logger.logger.debug(f"Task `{self.command}` stdout: {result.stdout}")
+            if result.stderr: logger.logger.debug(f"Task `{self.command}` stderr: {result.stderr}")
+            if result.returncode == 0:
+                self.status = "completed"
+            else:
+                self.status, error = "failed", "Non-zero exit code"
+        except Exception as e:
+            self.status, error = "failed", e
+            logger.logger.error(f"Error running task `{self.command}`: {e}")
+        except KeyboardInterrupt:
+            self.status, error = "failed", "Keyboard interrupt"
+            logger.logger.info(f"Task `{self.command}` interrupted by user.")
+        finally:
+            self.save(require="running")  # Save the task status after running
+            logger.logger.info(f"Task `{self.command}` finished with status: {self.status}")
+            
+            if self.status == "failed" and SEND_EMAIL:
+                try:
+                    send_email("Task failed", f"""
+                        <p><strong>Command:</strong> <code>{self.command}</code><br>
+                        <strong>Work Directory:</strong> {self.work_dir}</p>
+                        <p>Task end with status <span class="error">failed</span>:</p>
+                        <div class="note">{error}</div>
+                    """, config_env=EMAIL_CONFIG, content_type="html")
+                    logger.logger.info(f"Sent email notification for failed task.")
+                except Exception as e:
+                    logger.logger.error(f"Failed to send email notification for failed task: {e}")
+
+class Tasker:
+    def __init__(self):
+        self.task: Task = None
+    
+    @synchronized()
+    def load_1st_pending_task(self) -> bool:
+        """ Return 'failure' on error. """
+        tasks = load_tasks()
+        if not isinstance(tasks, dict): return "failure"
+        
+        try:
+            for task_id in sorted(tasks.keys(), key=int):
+                if tasks[task_id]["status"] == "pending":
+                    self.task = Task(
+                        task_id=int(task_id),
+                        work_dir=tasks[task_id]["wd"],
+                        command=tasks[task_id]["cmd"],
+                        status=tasks[task_id]["status"]
+                    )
+                    return True
+            return False  # No pending tasks found
+        
+        except Exception as e:
+            logger.logger.error(f"Error loading pending task: {e}")
+            return "failure"
+        except KeyboardInterrupt:
+            logger.logger.info("Keyboard interrupt received while loading pending task.")
+            return "failure"
+        finally: pass
+    
+    def run(self) -> int:
+        """
+        Run all pending tasks, and return the count of tasks run. 
+        Return 'failure' on error.
+        """
+        count = 0
+        while True:
+            if pause_file.exists():
+                break  # Exit if pause
+            
+            status = self.load_1st_pending_task()
+            
+            if status == "failure" or status is None:  # Error occurred
+                return "failure"
+            elif not status:  # No more pending tasks
+                break
+            
+            else:
+                count += 1
+                self.task.run()
+        return count
+
+def timed_input(prompt: str, timeout: float) -> str:
+    result = {"value": None}
+
+    def _worker():
+        result["value"] = input(prompt)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError
+    return result["value"]
+
+def confirm_input(prompt: str) -> str:
+    try:
+        return timed_input(prompt, timeout=10)
+    except TimeoutError:
+        print()
+        return "n"
+    except KeyboardInterrupt:
+        print()
+        return "n"
+
+class Operator:
+    def __init__(self, _tasker_id: str):
+        files_dir = Path.home() / "my" / ".tasker"
+        files_dir.mkdir(parents=True, exist_ok=True)
+
+        global tasker_id, logger, tasker_file, lock_file, run_file, pause_file
+        tasker_id = _tasker_id
+        logger = Logger(name=str(files_dir / f"tasker_{tasker_id}"), 
+                        level=LOG_LEVEL, width=80, start_from=9)
+        tasker_file = files_dir / f"tasker.{tasker_id}.json"
+        lock_file = files_dir / f".tasker.{tasker_id}.lock"
+        run_file = files_dir / f".tasker.{tasker_id}.run"
+        pause_file = files_dir / f".tasker.{tasker_id}.pause"
+
+        self.tasker = Tasker()
+        self.tasks: dict = None
+        self.n_tasks: int = None
+        
+    def run(self):
+        """ Run all pending tasks. """
+        if run_file.exists():
+            logger.logger.error(f"Tasker {tasker_id} is running. Exiting.")
+            return
+        try:
+            run_file.touch(exist_ok=False)  # Create a run file to indicate running state
+            
+            flag, start_wait, max_wait = False, None, 3 * (24*(60*60))
+            while True:
+                run_file.touch(exist_ok=True)  # Make sure the run file exists
+                
+                n_runs = self.tasker.run()
+                try:
+                    if n_runs == "failure":
+                        logger.logger.critical("Error running tasks. Require manual intervention.")
+                        break
+                    
+                    if n_runs == 0:
+                        if not flag:  # First time no tasks to run
+                            if pause_file.exists():
+                                logger.logger.info("Tasker paused. Waiting for resume...")
+                            else:
+                                logger.logger.info("All tasks done. Waiting for new tasks...")
+                                if SEND_EMAIL:
+                                    if self.auto_lsall_email():
+                                        logger.logger.info("Sent email notification for all tasks done.")
+                                    else: logger.logger.error("Failed to send email notification.")
+                            start_wait = time.time()
+                            flag = True
+                        else:
+                            if start_wait is not None and time.time() - start_wait > max_wait:
+                                logger.logger.info("No tasks run for a long time, exiting.")
+                                break
+                            else:
+                                run_file.touch(exist_ok=True)  # Make sure the run file exists
+                                time.sleep(10)  # Wait before checking again
+                    else:
+                        flag = False  # Reset flag if tasks were run
+                
+                except KeyboardInterrupt:
+                    logger.logger.info("Keyboard interrupt received. Exiting.")
+                    break
+                except Exception as e:
+                    logger.logger.error(f"Unexpected error when running: {e}")
+                    break
+        finally:
+            if run_file.exists(): run_file.unlink()  # Remove run file when done
+            else: logger.logger.warning("Run file not found after the run done.")
+    
+    @synchronized()
+    def auto_lsall_email(self) -> bool:
+        try:
+            if self._load_tasks():
+                send_email("All tasks done", f"""
+                    Tasker {tasker_id} has completed all tasks.
+                    {get_table_content(self.tasks)}
+                """, config_env=EMAIL_CONFIG, content_type="html")
+                return True
+            else: 
+                logger.logger.error("Failed to load tasks. Please check the tasker file.")
+                return False
+        except Exception as e:
+            logger.logger.error(f"Error sending e-mail: {e}")
+            return False
+
+    def _load_tasks(self) -> bool:
+        """ **Should be wrapped with lock** """
+        self.tasks = load_tasks()
+        if not isinstance(self.tasks, dict): 
+            return False
+        self.n_tasks = len(self.tasks)
+        return True
+    
+    @synchronized()
+    def pause(self):
+        """ Pause the tasker. """
+        logger.logger.info("[USER OPERATION] Pause tasker")
+        logger.divider.word_line("pause")
+        try:
+            if not pause_file.exists():
+                pause_file.touch(exist_ok=False)
+                if self._load_tasks():
+                    for task_id, task_info in self.tasks.items():
+                        pause_task = None
+                        if task_info['status'] == 'running':
+                            pause_task = [task_id, task_info['cmd']]
+                            break
+                    if pause_task:
+                        logger.divider._write(f"Tasker will be paused after running task {pause_task[0]}:\n"
+                                              f"  `{pause_task[1]}`\n"
+                                              f"You can resume it with `tasker.py {tasker_id} resume` later.\n")
+                    else: logger.logger.info("Tasker paused with no running tasks.")
+                else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+            else: logger.logger.info("Tasker is already paused.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when pausing tasker: {e}")
+        finally:
+            logger.divider.word_line("pause")
+    
+    def resume(self):
+        """ Resume the tasker. """
+        try:
+            if pause_file.exists():
+                pause_file.unlink()
+                logger.logger.info("Tasker resumed.")
+            else: logger.logger.info("Tasker is not paused.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when resuming tasker: {e}")
+    
+    def check_valid_tasks(self) -> bool:
+        """ Check if all task keys are ordered. Run after loading tasks. """
+        if self.tasks is None:
+            return False
+        # Convert string keys to integers for comparison
+        try:
+            int_keys = [int(k) for k in self.tasks.keys()]
+            return int_keys == list(range(1, len(self.tasks) + 1))
+        except ValueError:
+            return False
+    
+    @synchronized()
+    def list(self, only_pending=True):
+        """
+        List all tasks.
+        'only_pending' to show pending and running tasks.
+        """
+        logger.logger.info(f"[USER OPERATION] List all {'pending ' if only_pending else ''}tasks")
+        logger.divider.word_line("list")
+        try:
+            if self._load_tasks():
+                if not self.check_valid_tasks():
+                    logger.logger.error(f"Task keys are not ordered. Please run `tasker.py {tasker_id} fix` to fix it.")
+                    
+                elif self.n_tasks == 0 or ( only_pending and 
+                        sum(1 for task in self.tasks.values() if task['status'] in ['pending', 'running']) == 0 ):
+                    logger.divider.write("No tasks in the queue.")
+                else:
+                    for task_id, task_info in self.tasks.items():
+                        if only_pending and task_info['status'] not in ['pending', 'running']:
+                            continue
+                        logger.divider._write(f"{task_id:>5} | ---[ {task_info['status']} ]---\n"
+                                              f"      | {task_info['cmd']}\n"
+                                              f"      | {task_info['wd']}\n")
+            else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when listing tasks: {e}")
+        finally:
+            logger.divider.word_line("list")
+    
+    def save(self) -> bool:
+        """ **Should be wrapped with lock** """
+        try:
+            shutil.copy(str(tasker_file), str(tasker_file) + ".copy")
+            with open(tasker_file, 'w') as f:
+                json.dump(self.tasks, f, indent=4)
+            return True
+        except Exception as e:
+            logger.logger.error(f"Error saving tasks: {e}")
+            return False
+        except KeyboardInterrupt:
+            logger.logger.info(f"Keyboard interrupt received while saving tasks. "
+                               "This may cause fatal error. Please check.")
+    
+    def check_load_tasks(self) -> bool:
+        """
+        Run before inserting or removing a task.
+        Check if tasks are loaded and consistent.
+        """
+        if self.tasks is None or self.n_tasks is None:
+            logger.logger.error("Tasks not loaded. Please load tasks first.")
+            return False
+        
+        if len(self.tasks) != self.n_tasks:
+            logger.logger.error("Tasks and n_tasks are not consistent. Please load again.")
+            return False
+
+        return True
+    
+    def check_position(self, pos: int, max_pos: int, min_pos: int=1) -> bool:
+        if not isinstance(pos, int) or not isinstance(max_pos, int) or not isinstance(min_pos, int):
+            return False
+        
+        if pos < min_pos or pos > max_pos:
+            logger.logger.error(f"Invalid position {pos}.")
+            return False
+        return True
+    
+    def insert_task(self, pos: int, task_info: dict) -> bool:
+        """
+        **Should be wrapped with lock**.
+        Insert a task at position POS.
+        Task info should be a dictionary with keys 'wd', 'cmd', and 'status'.
+        """
+        if not self.check_load_tasks(): return False
+        if not self.check_position(pos, self.n_tasks + 1):
+            return False
+        
+        try:
+            for i in reversed(range(pos+1, self.n_tasks+1 + 1)):
+                self.tasks[str(i)] = self.tasks[str(i - 1)]
+            self.tasks[str(pos)] = task_info
+            self.n_tasks += 1
+            return True
+        except Exception as e:
+            return False
+    
+    def remove_task(self, pos: int) -> dict:
+        """
+        **Should be wrapped with lock**.
+        Remove the task at position POS and return its task info.
+        Return 'False' on error.
+        """
+        if not self.check_load_tasks(): return False
+        if not self.check_position(pos, self.n_tasks):
+            return False
+        
+        try:
+            removed_task = self.tasks.pop(str(pos))
+            self.n_tasks -= 1
+            # Shift tasks down
+            for i in range(pos, self.n_tasks + 1):
+                self.tasks[str(i)] = self.tasks.pop(str(i + 1))
+            return removed_task
+        except Exception as e:
+            return False
+    
+    @synchronized()
+    def append(self, command: str, work_dir: str=CWD_PATH):
+        """ Append a new task to the queue. """
+        logger.logger.info(f"[USER OPERATION] Appended task")
+        logger.divider.word_line("append")
+        try:
+            work_dir = str(Path(work_dir).resolve())
+            if self._load_tasks():
+                if not self.check_valid_tasks():
+                    logger.logger.error(f"Task keys are not ordered. Please run `tasker.py {tasker_id} fix` to fix it.")
+
+                elif self.insert_task(self.n_tasks + 1, {
+                        "wd": work_dir,
+                        "cmd": command,
+                        "status": "pending"
+                    }):
+                    if self.save():
+                        logger.divider._write(f"Appended task {self.n_tasks}:\n"
+                                              f"    Command: {command}\n"
+                                              f"    Work Directory: {work_dir}\n")
+                    else: logger.logger.error("Error saving tasks after appending.")
+                else: logger.logger.error("Error appending task. Exiting.")
+            else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when appending task: {e}")
+        finally:
+            logger.divider.word_line("append")
+    
+    @synchronized()
+    def insert(self, pos: int, command: str, work_dir: str=CWD_PATH):
+        """ Insert a new task before position POS. """
+        logger.logger.info(f"[USER OPERATION] Insert task at position {pos}")
+        logger.divider.word_line("insert")
+        try:
+            work_dir = str(Path(work_dir).resolve())
+            if self._load_tasks():
+                if pos == -1: pos = self.n_tasks
+                if not self.check_valid_tasks():
+                    logger.logger.error(f"Task keys are not ordered. Please run `tasker.py {tasker_id} fix` to fix it.")
+
+                elif self.insert_task(pos, {
+                        "wd": work_dir,
+                        "cmd": command,
+                        "status": "pending"
+                    }):
+                    if self.save():
+                        logger.divider._write(f"Inserted task at position {pos}:\n"
+                                              f"    Command: {command}\n"
+                                              f"    Work Directory: {work_dir}\n")
+                    else: logger.logger.error("Error saving tasks after inserting.")
+                else: logger.logger.error("Error inserting task. Exiting.")
+            else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when inserting task: {e}")
+        finally:
+            logger.divider.word_line("insert")
+
+    @synchronized()
+    def remove(self, pos: int):
+        """ Remove the task at position POS. """
+        logger.logger.info(f"[USER OPERATION] Remove task at position {pos}")
+        logger.divider.word_line("remove")
+        try:
+            if self._load_tasks():
+                if pos == -1: pos = self.n_tasks
+                if not self.check_valid_tasks():
+                    logger.logger.error(f"Task keys are not ordered. Please run `tasker.py {tasker_id} fix` to fix it.")
+                
+                elif not self.check_position(pos, self.n_tasks): pass  # Invalid position
+                elif not run_file.exists() or self.tasks[str(pos)]['status'] != "running":
+                    confirm = confirm_input(f"Task status at position {pos} is {self.tasks[str(pos)]['status']}. \n"
+                                            "Are you sure you want to remove it? (y/n): ").strip().lower()
+                    if confirm == 'y':
+                        removed_task = self.remove_task(pos)
+                        if removed_task:
+                            if self.save():
+                                logger.divider._write(f"Removed task at position {pos}:\n"
+                                                      f"    Command: {removed_task['cmd']}\n"
+                                                      f"    Work Directory: {removed_task['wd']}\n"
+                                                      f"    Status: {removed_task['status']}\n")
+                            else: logger.logger.error("Error saving tasks after removing.")
+                        else: logger.logger.error("Error removing task. Exiting.")
+                    else:logger.logger.info(f"Canceled removing task at position {pos}.")
+                else: logger.logger.error("Cannot removing running task.")
+            else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when removing task: {e}")
+        finally:
+            logger.divider.word_line("remove")
+
+    @synchronized()
+    def move(self, pos: int, target_pos: int):
+        """
+        Move the task at position POS to TARGET_POS.
+        """
+        logger.logger.info(f"[USER OPERATION] Move task from position {pos} to {target_pos}")
+        logger.divider.word_line("move")
+        try:
+            if self._load_tasks():
+                if pos == -1: pos = self.n_tasks
+                if target_pos == -1: target_pos = self.n_tasks
+                if not self.check_valid_tasks():
+                    logger.logger.error(f"Task keys are not ordered. Please run `tasker.py {tasker_id} fix` to fix it.")
+                
+                elif pos == target_pos:
+                    logger.logger.info(f"Task already at position {pos}.")
+                elif not self.check_position(pos, self.n_tasks): pass  # Invalid position
+                elif self.insert_task(target_pos + 1 if pos < target_pos else target_pos, self.tasks[str(pos)]) and (
+                        self.remove_task(pos if pos < target_pos else pos + 1) ):
+                    if self.save():
+                        logger.divider._write(f"Moved task from position {pos} to {target_pos}:\n"
+                                              f"    Command: {self.tasks[str(target_pos)]['cmd']}\n"
+                                              f"    Work Directory: {self.tasks[str(target_pos)]['wd']}\n")
+                    else: logger.logger.error("Error saving tasks after moving.")
+                else: logger.logger.error("Error moving task. Exiting.")
+            else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when moving task: {e}")
+        finally:
+            logger.divider.word_line("move")
+
+    @synchronized()
+    def rerun(self, pos: int):
+        """ Rerun the task at position POS. """
+        logger.logger.info(f"[USER OPERATION] Rerun task at position {pos}")
+        logger.divider.word_line("rerun")
+        try:
+            if self._load_tasks():
+                if pos == -1: pos = self.n_tasks
+                if not self.check_valid_tasks():
+                    logger.logger.error(f"Task keys are not ordered. Please run `tasker.py {tasker_id} fix` to fix it.")
+
+                elif self.check_position(pos, self.n_tasks): 
+                    self.tasks[str(pos)]["status"] = "pending"
+                    if self.save():
+                        logger.divider._write(f"Rerun task at position {pos}:\n"
+                                              f"    Command: {self.tasks[str(pos)]['cmd']}\n"
+                                              f"    Work Directory: {self.tasks[str(pos)]['wd']}\n")
+                    else: logger.logger.error("Error saving tasks after rerun.")
+                # else: logger.logger.error(f"Invalid position {pos} for rerun.")
+            else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when rerunning task: {e}")
+        finally:
+            logger.divider.word_line("rerun")
+
+    @synchronized()
+    def swap(self, pos1: int, pos2: int):
+        logger.logger.info(f"[USER OPERATION] Swap tasks at position {pos1} and {pos2}")
+        logger.divider.word_line("swap")
+        try:
+            if self._load_tasks():
+                if pos1 == -1: pos1 = self.n_tasks
+                if pos2 == -1: pos2 = self.n_tasks
+                if not self.check_valid_tasks():
+                    logger.logger.error(f"Task keys are not ordered. Please run `tasker.py {tasker_id} fix` to fix it.")
+                
+                elif pos1 == pos2 or not self.check_position(pos1, self.n_tasks) or not self.check_position(pos2, self.n_tasks):
+                    logger.logger.error(f"Invalid position {pos1} and {pos2} for swap.")
+                else:
+                    self.tasks[str(pos1)], self.tasks[str(pos2)] = self.tasks[str(pos2)], self.tasks[str(pos1)]
+                    if self.save():
+                        logger.divider._write(f"Swapped tasks at positions {pos1} and {pos2}, now:\n"
+                                              f"{pos1:>5}: {self.tasks[str(pos1)]['cmd']}\n"
+                                              f"{pos2:>5}: {self.tasks[str(pos2)]['cmd']}\n")
+                    else: logger.logger.error("Error saving tasks after swap.")
+            else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when swapping tasks: {e}")
+        finally:
+            logger.divider.word_line("swap")
+    
+    @synchronized()
+    def clear(self, status: List[str]=["completed"]):
+        """
+        Clear tasks with the given status.
+        Status can be 'pending', 'completed', or 'failed'.
+        """
+        logger.logger.info(f"[USER OPERATION] Clear tasks with status: {','.join(status)}")
+        logger.divider.word_line("clear")
+        try:
+            if not all(s in ["pending", "completed", "failed"] for s in status):
+                logger.logger.error(f"Invalid status {status}. Must be one of 'pending', 'completed', or 'failed'.")
+
+            elif self._load_tasks():
+                if not self.check_valid_tasks():
+                    logger.logger.error(f"Task keys are not ordered. Please run `tasker.py {tasker_id} fix` to fix it.")
+                
+                else:
+                    tasks_to_remove = [k for k, v in self.tasks.items() if v['status'] in status]
+                    if not tasks_to_remove:
+                        logger.logger.info("No tasks with specific status found.")
+                    else:
+                        print(f"{len(tasks_to_remove)} tasks:")
+                        for task_id in tasks_to_remove: print(f"  `{self.tasks[task_id]['cmd']}`")
+                        confirm = confirm_input("will be removed. Are you sure you want to remove them? (y/n): ").strip().lower()
+                        if confirm == 'y':
+                            cleared = []
+                            for task_id in reversed(tasks_to_remove):
+                                if self.remove_task(int(task_id)):
+                                    cleared.append(task_id)
+                                else: logger.logger.error(f"Error removing task {task_id}.")
+                            if self.save():
+                                logger.divider.write(f"Cleared {len(cleared)} tasks: " 
+                                                     f"{', '.join(reversed(cleared))}.")
+                            else: logger.logger.error("Error saving tasks after clearing.")
+                        else: logger.logger.info(f"Canceled clearing tasks with specific status.")
+            else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when clearing tasks: {e}")
+        finally:
+            logger.divider.word_line("clear")
+    
+    @synchronized()
+    def fix(self):
+        """
+        Fix the task keys to be ordered.
+        This should be run if the task keys are not ordered.
+        """
+        logger.logger.info("[USER OPERATION] Fix task keys")
+        logger.divider.word_line("fix")
+        try:
+            if self._load_tasks():
+                if self.check_valid_tasks():
+                    logger.logger.info("Task keys are already ordered.")
+                else:
+                    task_ids = sorted(self.tasks.keys(), key=int)
+                    if len(task_ids) == self.n_tasks:
+                        new_tasks = {str(i): self.tasks[task_ids[i - 1]] 
+                                    for i in range(1, self.n_tasks + 1)}
+                        self.tasks = new_tasks
+                        if self.save():
+                            logger.divider.write(f"Fixed task keys. Now they are ordered: "
+                                                 f"{', '.join(self.tasks.keys())}.")
+                        else: logger.logger.error("Error saving tasks after fixing.")
+                    else: logger.logger.error("Failed to fix task keys. Number of task IDs and tasks not match.")
+            else: logger.logger.error("Failed to load tasks. Please check the tasker file.")
+        except Exception as e:
+            logger.logger.error(f"Unexpected error when fixing task keys: {e}")
+        finally:
+            logger.divider.word_line("fix")
+
+def get_table_content(tasks: dict) -> str:
+    td_class = {"completed": "success", "failed": "error", "running": "warning", "pending": "warning"}
+    table_content = """
+        <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Status</th>
+                    <th>Command</th>
+                    <th>Work Directory</th>
+                </tr>
+            </thead>
+            <tbody>
+    """
+    
+    for task_id, task_info in tasks.items():
+        if not all (k in task_info.keys() for k in ["status", "cmd", "wd"]):
+            raise ValueError("Each item in JSON must contain 'status', 'cmd', and 'wd' keys")
+        if not task_info['status'] in ["completed", "failed"]:
+            if task_info['status'] in ["running", "pending"]:
+                raise Warning("Status NOT 'completed' or 'failed'")
+            raise ValueError(f"Invalid status: {task_info['status']}")
+        
+        table_content += f"""
+                <tr>
+                    <td class="id-cell">{task_id}</td>
+                    <td class="status-cell"><span class="{td_class[task_info['status']]}">{task_info['status']}</span></td>
+                    <td class="command-cell"><code>{task_info['cmd']}</code></td>
+                    <td class="directory-cell">{task_info['wd']}</td>
+                </tr>
+        """
+    
+    table_content += """
+            </tbody>
+        </table>
+        </div>
+    """
+    return table_content
+
+
+def main(args):
+    operator = Operator(args.tasker_id)
+
+    if args.mode == "run":
+        operator.run()
+    
+    elif args.mode == "pause":
+        operator.pause()
+    
+    elif args.mode == "resume":
+        operator.resume()
+    
+    elif args.mode == "ls":
+        operator.list(only_pending=True)
+    
+    elif args.mode == "la":
+        operator.list(only_pending=False)
+    
+    elif args.mode == "add":
+        command = input("Command: ").strip()
+        work_dir = input(f"Work directory: (default '.') ").strip() or CWD_PATH
+        operator.append(command, work_dir)
+    
+    elif args.mode == "in":
+        position = int(input("Position to insert at: "))
+        command = input("Command: ").strip()
+        work_dir = input(f"Work directory: (default '.') ").strip() or CWD_PATH
+        operator.insert(position, command, work_dir)
+    
+    elif args.mode == "rm":
+        position = int(input("Position to remove: "))
+        operator.remove(position)
+
+    elif args.mode == "mv":
+        pos = int(input("Position to move: "))
+        target_pos = int(input("Target position: "))
+        operator.move(pos, target_pos)
+    
+    elif args.mode == "rerun":
+        position = int(input("Position to rerun: "))
+        operator.rerun(position)
+
+    elif args.mode == "swap":
+        pos1 = int(input("Position 1 to swap: "))
+        pos2 = int(input("Position 2 to swap: "))
+        operator.swap(pos1, pos2)
+    
+    elif args.mode == "clr":
+        status_str = input("Status to clear: p - pending, \n"
+                           "                 c - completed, \n"
+                           "                 f - failed. \n"
+                           "(default is c): ").strip().lower() or "c"
+        status = []
+        if "p" in status_str: status.append("pending")
+        if "c" in status_str: status.append("completed")
+        if "f" in status_str: status.append("failed")
+        operator.clear(status)
+    
+    elif args.mode == "fix":
+        operator.fix()
+    
+    elif args.mode == "help":
+        print("Available modes:")
+        print("  run       - Run all pending tasks")
+        print("  pause     - Pause the tasker")
+        print("  resume    - Resume the tasker")
+        print("  ls        - List all pending tasks")
+        print("  la        - List all tasks")
+        print("  add       - Add a new task")
+        print("  in        - Insert a task at a specific position")
+        print("  rm        - Remove a task at a specific position")
+        print("  mv        - Move a task to a different position")
+        print("  rerun     - Rerun a task at a specific position")
+        print("  swap      - Swap two tasks at specified positions")
+        print("  clr       - Clear tasks with specific status")
+        print("  fix       - Fix task keys to be ordered")
+    
+    else:
+        logger.logger.error(f"Unknown mode: {args.mode}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Simple queue-based task runner.")
+    parser.add_argument("tasker_id", type=str, help="Tasker ID to identify the task queue")
+    parser.add_argument("mode", type=str, help="Execute mode")
+    args = parser.parse_args()
+    main(args)

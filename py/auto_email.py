@@ -250,15 +250,12 @@ def get_html_email(subject, content, device=None):
 </body>
 </html>
 """
+ 
 
-
-def main():
+if __name__ == "__main__":
     import time
     send_email("Test", "This is a test email.")
     time.sleep(5)
     send_email("Test HTML", f"""
         <p>This is a test email with <strong>HTML</strong> content.</p>
     """, content_type="html")
-
-if __name__ == "__main__":
-    main()
