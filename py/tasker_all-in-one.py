@@ -1,7 +1,7 @@
 """
 python tasker_all-in-one.py <tasker_id> <mode>
 Requirements:
-    pip install python-dotenv
+    (auto_email) pip install python-dotenv
 
 An combined version of auto_email.py, logger.py and tasker.py.
 
@@ -22,13 +22,6 @@ MAX_SUBJECT_LENGTH = 50
 
 # ----------- import ----------- #
 
-# auto_email
-import datetime
-import os
-import smtplib
-from dotenv import load_dotenv
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 # logger
 import logging
 import sys
@@ -43,6 +36,14 @@ import subprocess
 import threading
 import time
 from typing import List
+# auto_email
+if SEND_EMAIL:
+    import datetime
+    import os
+    import smtplib
+    from dotenv import load_dotenv
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
 
 # -------------------------- auto_email -------------------------- #
 
