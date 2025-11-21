@@ -1,7 +1,18 @@
 """
 Requirements:
     pip install python-dotenv
+    pip install PySocks  # if using SOCKS proxy
 """
+SOCKS_PORT = 63333  # Set to None if not using SOCKS proxy
+                    # localhost:SOCKS_PORT will be used as the SOCKS proxy
+if SOCKS_PORT in range(1, 65536):
+    import socks
+    import socket
+    socks.set_default_proxy(socks.SOCKS5, "127.0.0.1", SOCKS_PORT)
+    socket.socket = socks.socksocket
+elif SOCKS_PORT is not None:
+    raise ValueError("SOCKS_PORT must be in range 1-65535 or None")
+
 import datetime
 import os
 import smtplib
@@ -254,8 +265,15 @@ def get_html_email(subject, content, device=None):
 
 if __name__ == "__main__":
     import time
+
+    print("Sending e-mail... ", end="", flush=True)
     send_email("Test", "This is a test email.")
+    print("Done.")
+
     time.sleep(5)
+
+    print("Sending e-mail... ", end="", flush=True)
     send_email("Test HTML", f"""
         <p>This is a test email with <strong>HTML</strong> content.</p>
     """, content_type="html")
+    print("Done.")

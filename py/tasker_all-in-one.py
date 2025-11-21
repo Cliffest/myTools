@@ -2,6 +2,7 @@
 python tasker_all-in-one.py <tasker_id> <mode>
 Requirements:
     (auto_email) pip install python-dotenv
+    (auto_email) pip install PySocks
 
 An combined version of auto_email.py, logger.py and tasker.py.
 
@@ -17,6 +18,7 @@ from pathlib import Path
 LOG_LEVEL = "INFO"
 CWD_PATH = Path.cwd()
 SEND_EMAIL = True
+SOCKS_PORT = 63333  # or None
 EMAIL_CONFIG = "~/my/_env/email.env"
 MAX_SUBJECT_LENGTH = 50
 
@@ -38,6 +40,13 @@ import time
 from typing import List
 # auto_email
 if SEND_EMAIL:
+    if SOCKS_PORT in range(1, 65536):
+        import socks
+        import socket
+        socks.set_default_proxy(socks.SOCKS5, "127.0.0.1", SOCKS_PORT)
+        socket.socket = socks.socksocket
+    elif SOCKS_PORT is not None:
+        raise ValueError("SOCKS_PORT must be in range 1-65535 or None")
     import datetime
     import os
     import smtplib
