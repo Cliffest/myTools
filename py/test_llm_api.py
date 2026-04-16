@@ -19,12 +19,12 @@ def load_api_key(key_name: str, env_file: str=None) -> str:
     return os.getenv(key_name)
 
 def main(args):
-    key_name = args.key or "API_KEY"
+    key_name = args.keyname or "API_KEY"
     env_file = Path(args.env) if args.env is not None else (
                Path.home() / "my" / "_env" / "test.env")
     
     try:
-        api_key = load_api_key(key_name)
+        api_key = args.key or load_api_key(key_name)
         if not api_key: api_key = load_api_key(key_name, env_file)
         if not api_key:
             print(f"API key '{key_name}' does not exist. Please set it by \n"
@@ -47,10 +47,14 @@ def main(args):
             ],
             stream=False
         )
-        print(f"API call took {time.time() - start_time:.2f} seconds: \n")
+        end_time = time.time()
 
-        #print(response.choices[0].message.content)
+        print("\n------ Detailed Response ------")
         print(json.dumps(response.model_dump(), indent=4, ensure_ascii=False))
+
+        print("\n----------- Summary -----------")
+        print(f"  API call took {end_time - start_time:.2f} seconds")
+        print(f"{args.model.split('/')[-1]}: {response.choices[0].message.content}")
     
     except Exception as e:
         print(f"Error during API call - {e}")
@@ -62,7 +66,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test LLM API")
     parser.add_argument("base_url", type=str, help="Base URL for the API")
     parser.add_argument("model", type=str, help="Model to use for the chat completion")
-    parser.add_argument("--key", type=str, default=None, help="Environment variable name for the API key")
+    parser.add_argument("-k", "--key", type=str, default=None, help="API key for test")
+    parser.add_argument("--keyname", type=str, default=None, help="Environment variable name for the API key")
     parser.add_argument("--env", type=str, default=None, help="Path to .env file containing the API key")
     args = parser.parse_args()
     sys.exit(main(args))
