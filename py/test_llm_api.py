@@ -1,12 +1,10 @@
-# Please install OpenAI SDK first: `pip3 install openai`
 # `python ~/my/test_llm_api.py <base url> <model>`
 import argparse
 import json
 import os
 import sys
 import time
-from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI  # `pip install openai`
 from pathlib import Path
 
 def load_api_key(key_name: str, env_file: str=None) -> str:
@@ -14,12 +12,13 @@ def load_api_key(key_name: str, env_file: str=None) -> str:
         if not os.path.exists(env_file):
             print(f"Env file {env_file} does not exist.")
             return None
-        
+
+        from dotenv import load_dotenv  # `pip install python-dotenv`
         load_dotenv(dotenv_path=env_file)
     return os.getenv(key_name)
 
 def main(args):
-    key_name = args.keyname or "API_KEY"
+    key_name = args.keyname or "OPENAI_API_KEY"
     env_file = Path(args.env) if args.env is not None else (
                Path.home() / "my" / "_env" / "test.env")
     
@@ -63,11 +62,11 @@ def main(args):
     return 0
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test LLM API")
+    parser = argparse.ArgumentParser(description="Test LLM API; Require `pip install openai`")
     parser.add_argument("base_url", type=str, help="Base URL for the API")
     parser.add_argument("model", type=str, help="Model to use for the chat completion")
     parser.add_argument("-k", "--key", type=str, default=None, help="API key for test")
     parser.add_argument("--keyname", type=str, default=None, help="Environment variable name for the API key")
-    parser.add_argument("--env", type=str, default=None, help="Path to .env file containing the API key")
+    parser.add_argument("--env", type=str, default=None, help="Path to .env file containing the API key; Require `pip install python-dotenv`")
     args = parser.parse_args()
     sys.exit(main(args))

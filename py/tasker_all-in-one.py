@@ -41,7 +41,7 @@ from typing import List
 # auto_email
 if SEND_EMAIL:
     if SOCKS_PORT in range(1, 65536):
-        import socks
+        import socks  # `pip install PySocks`
         import socket
         socks.set_default_proxy(socks.SOCKS5, "127.0.0.1", SOCKS_PORT)
         socket.socket = socks.socksocket
@@ -50,7 +50,7 @@ if SEND_EMAIL:
     import datetime
     import os
     import smtplib
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv  # `pip install python-dotenv`
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
