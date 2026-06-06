@@ -18,7 +18,8 @@ tail -f /tmp/ssh_tunnels/combined.log       # all servers
 tail -f /tmp/ssh_tunnels/SERVERNAME.log     # one server
 
 # ── Stop ─────────────────────────────────────────────────────────────────────
-kill $(cat /tmp/ssh_tunnels/pids/manager.pid)
+# pids/ is stored beside ssh-R.sh, not under log_dir
+kill $(cat pids/manager.pid)
 ```
 
 
@@ -30,6 +31,7 @@ retry_interval    = 10
 server_alive      = 30
 server_alive_max  = 3
 max_retries       = 0
+stable_after      = 60
 log_dir           = /tmp/ssh_tunnels
 log_level         = INFO
 

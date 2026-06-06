@@ -22,14 +22,18 @@ set -uo pipefail
 RED='\033[0;31m';  GREEN='\033[0;32m';  YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m';  BOLD='\033[1m'; NC='\033[0m'
 
+# ─── Script Location ─────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+
 # ─── Global Defaults ─────────────────────────────────────────────────────────
 RETRY_INTERVAL="10"
 SERVER_ALIVE_INTERVAL="30"
 SERVER_ALIVE_COUNT_MAX="3"
 MAX_RETRIES="0"
 LOG_DIR="/tmp/ssh_tunnels"
-PID_DIR="/tmp/ssh_tunnels/pids"
+PID_DIR="${SCRIPT_DIR}/pids"
 LOG_LEVEL="INFO"
+STABLE_AFTER="60"
 
 # ─── Server name list (space-separated) ──────────────────────────────────────
 SERVER_NAMES=""
@@ -145,8 +149,8 @@ parse_config() {
                     server_alive)     SERVER_ALIVE_INTERVAL="$value"  ;;
                     server_alive_max) SERVER_ALIVE_COUNT_MAX="$value" ;;
                     max_retries)      MAX_RETRIES="$value"            ;;
-                    log_dir)          LOG_DIR="$value"
-                                      PID_DIR="${value}/pids"         ;;
+                    stable_after)     STABLE_AFTER="$value"           ;;
+                    log_dir)          LOG_DIR="$value"                ;;
                     log_level)        LOG_LEVEL="${value}"            ;;
                 esac
             else
@@ -353,7 +357,7 @@ run_tunnel_worker() {
     local server="$1"
 
     local ssh_alias remote_port local_port local_host
-    local retry_interval server_alive server_alive_max max_retries
+    local retry_interval server_alive server_alive_max max_retries stable_after
 
     ssh_alias=$(get_cfg        "$server" "ssh_alias"        "$server")
     remote_port=$(get_cfg      "$server" "remote_port"      "2222")
@@ -363,9 +367,12 @@ run_tunnel_worker() {
     server_alive=$(get_cfg     "$server" "server_alive"     "$SERVER_ALIVE_INTERVAL")
     server_alive_max=$(get_cfg "$server" "server_alive_max" "$SERVER_ALIVE_COUNT_MAX")
     max_retries=$(get_cfg      "$server" "max_retries"      "$MAX_RETRIES")
+    stable_after=$(get_cfg     "$server" "stable_after"     "$STABLE_AFTER")
 
     local retry_count=0
     local tunnel_pid=""
+    local tunnel_started_at=0
+    local tunnel_announced_up=0
     local last_fail_was_port_conflict=0
     # Pre-clean on first launch if we suspect leftover state from a previous run
     local first_launch=1
@@ -395,6 +402,8 @@ run_tunnel_worker() {
             log_debug "$server" "Killed SSH PID $tunnel_pid"
         fi
         tunnel_pid=""
+        tunnel_started_at=0
+        tunnel_announced_up=0
         rm -f "${PID_DIR}/${server}.pid"
     }
 
@@ -415,6 +424,8 @@ run_tunnel_worker() {
             2>> "${LOG_DIR}/${server}.log" &
 
         tunnel_pid=$!
+        tunnel_started_at=$(date '+%s')
+        tunnel_announced_up=0
         mkdir -p "$PID_DIR"
         echo "$tunnel_pid" > "${PID_DIR}/${server}.pid"
         log_debug "$server" "SSH launched (PID: $tunnel_pid)"
@@ -422,6 +433,12 @@ run_tunnel_worker() {
 
     _is_alive() {
         [[ -n "$tunnel_pid" ]] && kill -0 "$tunnel_pid" 2>/dev/null
+    }
+
+    _tunnel_age() {
+        local now
+        now=$(date '+%s')
+        echo $(( now - tunnel_started_at ))
     }
 
     # ── Cleanup on signal ─────────────────────────────────────────────────────
@@ -434,6 +451,18 @@ run_tunnel_worker() {
     while true; do
 
         if ! _is_alive; then
+            if [[ -n "$tunnel_pid" ]]; then
+                local age
+                age=$(_tunnel_age)
+                retry_count=$(( retry_count + 1 ))
+                if [[ "$tunnel_announced_up" -eq 1 ]]; then
+                    log_warn "$server" \
+                        "Tunnel went down after ${age}s (attempt $retry_count)"
+                else
+                    log_warn "$server" \
+                        "SSH exited before tunnel became stable after ${age}s (attempt $retry_count)"
+                fi
+            fi
 
             # ── Max retries check ─────────────────────────────────────────────
             if [[ "$max_retries" -gt 0 ]] && \
@@ -468,15 +497,18 @@ run_tunnel_worker() {
 
             # ── Launch the tunnel ─────────────────────────────────────────────
             _start_tunnel
+            log_info "$server" \
+                "SSH started (PID: $tunnel_pid) — confirming tunnel stability..."
 
             # Grace period — give SSH a chance to fail fast
             sleep 3
 
             if _is_alive; then
-                log_info "$server" "✓ Tunnel UP (PID: $tunnel_pid)"
-                retry_count=0
+                log_debug "$server" "Startup probe OK (PID: $tunnel_pid)"
                 last_fail_was_port_conflict=0
             else
+                local age
+                age=$(_tunnel_age)
                 retry_count=$(( retry_count + 1 ))
                 if port_forward_failed "$server"; then
                     log_warn "$server" \
@@ -484,10 +516,21 @@ run_tunnel_worker() {
                     last_fail_was_port_conflict=1
                 else
                     log_warn "$server" \
-                        "Tunnel exited (attempt $retry_count) — see ${LOG_DIR}/${server}.log"
+                        "SSH exited during startup after ${age}s (attempt $retry_count) — see ${LOG_DIR}/${server}.log"
                     last_fail_was_port_conflict=0
                 fi
+                _kill_tunnel
                 continue
+            fi
+        fi
+
+        if [[ "$tunnel_announced_up" -eq 0 ]]; then
+            local age
+            age=$(_tunnel_age)
+            if [[ "$age" -ge "$stable_after" ]]; then
+                log_info "$server" "✓ Tunnel stable for ${age}s (PID: $tunnel_pid)"
+                retry_count=0
+                tunnel_announced_up=1
             fi
         fi
 
