@@ -2,28 +2,33 @@
 Requirements:
     pip install python-dotenv
     pip install PySocks  # if using SOCKS proxy
+Usage examples:
+    python auto_email.py <title> <mainbody> [--footer <footer>]
+    python auto_email.py "A Test Email" "<p>This is a test email with <strong>HTML</strong> content.</p>" --footer "This email was sent by hand"
+    python auto_email.py "Email title, should less than 50 characters" "$(cat /tmp/email-body.txt)" --footer "This email was sent by hand"
 """
 SOCKS_PORT = 63333  # Set to None if not using SOCKS proxy
                     # localhost:SOCKS_PORT will be used as the SOCKS proxy
 if SOCKS_PORT in range(1, 65536):
-    import socks
+    import socks  # pip install PySocks
     import socket
     socks.set_default_proxy(socks.SOCKS5, "127.0.0.1", SOCKS_PORT)
     socket.socket = socks.socksocket
 elif SOCKS_PORT is not None:
     raise ValueError("SOCKS_PORT must be in range 1-65535 or None")
 
+import argparse
 import datetime
 import os
 import smtplib
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # pip install python-dotenv
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 MAX_SUBJECT_LENGTH = 50
 
 def load_config(config_env):
-    env_path = os.path.expanduser(config_env or "~/my/_env/email.env")
+    env_path = os.path.expanduser(config_env)
     if not os.path.exists(env_path):
         raise FileNotFoundError(f"{env_path} dose not exist")
     load_dotenv(env_path)
@@ -46,7 +51,8 @@ def load_config(config_env):
     
     return device, smtp_server, port, sender_email, password, receiver_emails
 
-def send_email(subject, content, config_env=None, content_type="plain"):
+def send_email(subject, content, footer="This email was sent automatically", 
+               config_env="~/my/_env/email.env", content_type="plain"):
     device, smtp_server, port, sender_email, password, receiver_emails = load_config(config_env)
 
     # Set the email header
@@ -55,7 +61,7 @@ def send_email(subject, content, config_env=None, content_type="plain"):
         raise ValueError(f"Subject length exceeds {MAX_SUBJECT_LENGTH} characters")
     
     if content_type == "html":
-        html_content = get_html_email(full_subject, content, device=device)
+        html_content = get_html_email(full_subject, content, footer, device)
         msg = MIMEMultipart("alternative")
         msg.attach(MIMEText("Please use an HTML supported email client to view this email.", "plain", "utf-8"))
         msg.attach(MIMEText(html_content, "html", "utf-8"))
@@ -92,14 +98,14 @@ def send_email(subject, content, config_env=None, content_type="plain"):
     except Exception as e:
         raise RuntimeError(f"Failed to send email - {str(e)}")
 
-def get_html_email(subject, content, device=None):
+def get_html_email(subject, content, footer, device=None):
     return f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{subject}</title>
+    <title>{subject or 'Untitled'}</title>
     <style>
         body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -244,26 +250,26 @@ def get_html_email(subject, content, device=None):
 <body>
     <div class="email-container">
         <div class="email-header">
-            <h1>{subject}</h1>
+            <h1>{subject or ''}</h1>
         </div>
         <div class="email-body">
             <div class="content">
-                {content}
+                {content or ''}
             </div>
             <div class="timestamp">
                 Send time: {(device+' • ') if device is not None else ''}{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             </div>
         </div>
         <div class="email-footer">
-            <p>This email was sent automatically</p>
+            <p>{footer or ''}</p>
         </div>
     </div>
 </body>
 </html>
 """
- 
 
-if __name__ == "__main__":
+
+def test_send():
     import time
 
     print("Sending e-mail... ", end="", flush=True)
@@ -277,3 +283,15 @@ if __name__ == "__main__":
         <p>This is a test email with <strong>HTML</strong> content.</p>
     """, content_type="html")
     print("Done.")
+
+if __name__ == "__main__":
+    # test_send()
+    # exit()
+    parser = argparse.ArgumentParser(description="Send email with HTML or plain text")
+    parser.add_argument("title", type=str, help="Title")
+    parser.add_argument("mainbody", type=str, help="Main body")
+    parser.add_argument("--footer", type=str, help="Footer", default="This email was sent automatically")
+    parser.add_argument("--config-env", type=str, help="Environment variables file", default="~/my/_env/email.env")
+    parser.add_argument("--content-type", type=str, help="'plain' or 'html' (default: html)", default="html")
+    args = parser.parse_args()
+    send_email(args.title, args.mainbody, args.footer, args.config_env, args.content_type)
