@@ -62,32 +62,51 @@ get_cfg() {
 # =============================================================================
 
 _log() {
-    local level="$1" tag="$2" color="$3"
-    shift 3
+    local level="$1" tag="$2" color="$3" screen_summary="$4"
+    shift 4
     local msg="$*"
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     local entry="[$timestamp][$level][$tag] $msg"
 
     mkdir -p "$LOG_DIR"
-    echo "$entry" >> "${LOG_DIR}/${tag}.log"
-    echo "$entry" >> "${LOG_DIR}/combined.log"
 
-    case "$level" in
-        DEBUG)
-            [[ "$LOG_LEVEL" == "DEBUG" ]] || return 0
-            echo -e "${color}${entry}${NC}"
-            ;;
-        *)
-            echo -e "${color}${entry}${NC}"
-            ;;
-    esac
+    # Per-tag detail log: always full fidelity
+    echo "$entry" >> "${LOG_DIR}/${tag}.log"
+
+    # combined.log: skip the periodic heartbeat — it drowns out everything else
+    if [[ "$msg" != Heartbeat* ]]; then
+        echo "$entry" >> "${LOG_DIR}/combined.log"
+    fi
+
+    # Decide screen visibility:
+    #   - manager-tagged messages    → always shown
+    #   - server-tagged summary      → shown (initial start / stable / went-down)
+    #   - server-tagged everything   → file only (see <server>.log for detail)
+    #   - DEBUG                      → only when LOG_LEVEL=DEBUG
+    local show=0
+    if [[ "$level" == "DEBUG" ]]; then
+        [[ "$LOG_LEVEL" == "DEBUG" ]] && show=1
+    elif [[ "$tag" == "manager" ]] || [[ "$screen_summary" == "1" ]]; then
+        show=1
+    fi
+
+    if [[ "$show" == "1" ]]; then
+        echo -e "${color}${entry}${NC}"
+        # screen.log mirrors what the user sees, minus ANSI colors
+        echo "$entry" >> "${LOG_DIR}/screen.log"
+    fi
 }
 
-log_info()  { _log "INFO " "$1" "${GREEN}"  "${@:2}"; }
-log_warn()  { _log "WARN " "$1" "${YELLOW}" "${@:2}"; }
-log_error() { _log "ERROR" "$1" "${RED}"    "${@:2}" >&2; }
-log_debug() { _log "DEBUG" "$1" "${CYAN}"   "${@:2}"; }
+log_info()  { _log "INFO " "$1" "${GREEN}"  "0" "${@:2}"; }
+log_warn()  { _log "WARN " "$1" "${YELLOW}" "0" "${@:2}"; }
+log_error() { _log "ERROR" "$1" "${RED}"    "1" "${@:2}" >&2; }
+log_debug() { _log "DEBUG" "$1" "${CYAN}"   "0" "${@:2}"; }
+
+# Server-summary helpers — surface to screen + screen.log.
+# Used only for: initial worker start, tunnel stable, tunnel went down.
+log_summary()      { _log "INFO " "$1" "${BOLD}${GREEN}"  "1" "${@:2}"; }
+log_summary_warn() { _log "WARN " "$1" "${BOLD}${YELLOW}" "1" "${@:2}"; }
 
 # =============================================================================
 # CONFIG PARSER  (INI-style, Bash 3 compatible)
@@ -377,7 +396,7 @@ run_tunnel_worker() {
     # Pre-clean on first launch if we suspect leftover state from a previous run
     local first_launch=1
 
-    log_info "$server" "Worker started → ${ssh_alias}:${remote_port} ← ${local_host}:${local_port}"
+    log_summary "$server" "Worker started → ${ssh_alias}:${remote_port} ← ${local_host}:${local_port}"
 
     # ── Kill current SSH child GRACEFULLY ─────────────────────────────────────
     # SIGTERM first → SSH sends "close port forward" to remote sshd → sshd
@@ -456,8 +475,8 @@ run_tunnel_worker() {
                 age=$(_tunnel_age)
                 retry_count=$(( retry_count + 1 ))
                 if [[ "$tunnel_announced_up" -eq 1 ]]; then
-                    log_warn "$server" \
-                        "Tunnel went down after ${age}s (attempt $retry_count)"
+                    log_summary_warn "$server" \
+                        "Tunnel went down after ${age}s, reconnecting (attempt $retry_count)"
                 else
                     log_warn "$server" \
                         "SSH exited before tunnel became stable after ${age}s (attempt $retry_count)"
@@ -528,7 +547,7 @@ run_tunnel_worker() {
             local age
             age=$(_tunnel_age)
             if [[ "$age" -ge "$stable_after" ]]; then
-                log_info "$server" "✓ Tunnel stable for ${age}s (PID: $tunnel_pid)"
+                log_summary "$server" "✓ Tunnel stable for ${age}s (PID: $tunnel_pid)"
                 retry_count=0
                 tunnel_announced_up=1
             fi

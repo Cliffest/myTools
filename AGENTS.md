@@ -8,4 +8,4 @@ When there is `#email` mark at the beginning of user prompt, signifies that you 
 
 ## Commit Messages
 
-When asked to generate `git commit` messages, follow the Bilingual Conventional-Commit rules in `.github/instructions/commit-style.instructions.md`.
+When generating `git commit` messages, follow the Bilingual Conventional-Commit rules in `.github/instructions/commit-style.instructions.md`.
