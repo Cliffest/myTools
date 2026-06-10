@@ -1,14 +1,10 @@
 ```bash
-# ── Install sshpass ──────────────────────────────────────────────────────────
-# sudo apt install sshpass            # Debian/Ubuntu
-# brew install hudochenkov/sshpass/sshpass  # macOS
+# ── Requirements ─────────────────────────────────────────────────────────────
+# Remote host (ssh_alias) must set no password login!
 
 # ── Run ──────────────────────────────────────────────────────────────────────
 chmod +x ssh-R.sh
-./ssh-R.sh tunnels.conf
-
-# Run in background
-nohup ./ssh-R.sh tunnels.conf &
+./ssh-R.sh tunnels.conf &  # In background
 
 # ── Status ───────────────────────────────────────────────────────────────────
 ./ssh-R.sh status tunnels.conf
