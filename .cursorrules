@@ -2,7 +2,7 @@
 
 ## Commit Message Instructions
 
-(From `.github/instructions/commit-style.instructions.md`)
+(From `docs/instructions.commit-style.md`)
 
 ---
 description: "Bilingual Conventional-Commit rules"
